@@ -148,6 +148,39 @@ class TestDeploymentService(unittest.TestCase):
             with self.assertRaises(FileNotFoundError):
                 self.service.deploy(app_id=self.app.id, context_path=Path(empty_dir))
 
+    def test_rollback_to_previous_active(self) -> None:
+        # Deploy v1
+        dep1 = self.service.deploy(app_id=self.app.id, context_path=self.project_path)
+        self.assertEqual(dep1.status, DeploymentStatus.ACTIVE)
+
+        # Deploy v2
+        dep2 = self.service.deploy(app_id=self.app.id, context_path=self.project_path)
+        self.assertEqual(dep2.status, DeploymentStatus.ACTIVE)
+
+        # Rollback to v1
+        rb_dep = self.service.rollback(app_id=self.app.id)
+        self.assertEqual(rb_dep.status, DeploymentStatus.ACTIVE)
+
+        # v2 should be marked ROLLED_BACK
+        updated_dep2 = self.service.dep_repo.get_by_id(dep2.id)
+        assert updated_dep2 is not None
+        self.assertEqual(updated_dep2.status, DeploymentStatus.ROLLED_BACK)
+
+        # Events
+        events = self.service.event_repo.list_by_app(self.app.id)
+        event_kinds = [e.event_kind for e in events]
+        self.assertIn(EventKind.DEPLOYMENT_ROLLBACK_STARTED, event_kinds)
+        self.assertIn(EventKind.DEPLOYMENT_ROLLBACK_COMPLETED, event_kinds)
+
+    def test_rollback_no_previous_deployment_fails(self) -> None:
+        # Deploy v1
+        self.service.deploy(app_id=self.app.id, context_path=self.project_path)
+
+        # No earlier deployment exists to rollback to
+        from forge.core.errors import ValidationError
+        with self.assertRaises(ValidationError):
+            self.service.rollback(app_id=self.app.id)
+
 
 if __name__ == "__main__":
     unittest.main()

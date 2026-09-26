@@ -377,6 +377,7 @@ class DeploymentRepository:
         error_message: str | None = None,
         candidate_container_id: str | None = None,
         active_container_id: str | None = None,
+        revision_id: str | None = None,
     ) -> Deployment:
         dep = self.get_by_id(deployment_id)
         if dep is None:
@@ -398,6 +399,7 @@ class DeploymentRepository:
         new_candidate = candidate_container_id if candidate_container_id is not None else dep.candidate_container_id
         new_active = active_container_id if active_container_id is not None else dep.active_container_id
         new_error = error_message if error_message is not None else dep.error_message
+        new_revision = revision_id if revision_id is not None else dep.revision_id
 
         conn = self.db.get_connection()
         try:
@@ -405,13 +407,14 @@ class DeploymentRepository:
                 """
                 UPDATE deployments
                 SET status = ?, candidate_container_id = ?, active_container_id = ?,
-                    error_message = ?, started_at = ?, finished_at = ?
+                    revision_id = ?, error_message = ?, started_at = ?, finished_at = ?
                 WHERE id = ?
                 """,
                 (
                     target_status.value,
                     new_candidate,
                     new_active,
+                    new_revision,
                     new_error,
                     started_at,
                     finished_at,
@@ -422,7 +425,7 @@ class DeploymentRepository:
             return Deployment(
                 id=dep.id,
                 app_id=dep.app_id,
-                revision_id=dep.revision_id,
+                revision_id=new_revision,
                 status=target_status,
                 candidate_container_id=new_candidate,
                 active_container_id=new_active,
@@ -431,6 +434,88 @@ class DeploymentRepository:
                 started_at=started_at,
                 finished_at=finished_at,
             )
+        finally:
+            if self.db.db_path != ":memory:":
+                conn.close()
+
+
+class RevisionRepository:
+    def __init__(self, db: Database) -> None:
+        self.db = db
+
+    def create(
+        self,
+        app_id: str,
+        version_tag: str,
+        image_name: str,
+        config_snapshot: dict[str, Any] | None = None,
+    ) -> DeploymentRevision:
+        rev_id = f"rev-{uuid.uuid4().hex[:8]}"
+        snapshot = config_snapshot or {}
+        now = utc_now()
+        conn = self.db.get_connection()
+        try:
+            conn.execute(
+                """
+                INSERT INTO deployment_revisions (id, app_id, version_tag, image_name, config_snapshot, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (rev_id, app_id, version_tag, image_name, json.dumps(snapshot), now),
+            )
+            conn.commit()
+            return DeploymentRevision(
+                id=rev_id,
+                app_id=app_id,
+                version_tag=version_tag,
+                image_name=image_name,
+                config_snapshot=snapshot,
+                created_at=now,
+            )
+        finally:
+            if self.db.db_path != ":memory:":
+                conn.close()
+
+    def get_by_id(self, revision_id: str) -> DeploymentRevision | None:
+        conn = self.db.get_connection()
+        try:
+            cursor = conn.execute(
+                "SELECT id, app_id, version_tag, image_name, config_snapshot, created_at FROM deployment_revisions WHERE id = ?",
+                (revision_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return DeploymentRevision(
+                id=row["id"],
+                app_id=row["app_id"],
+                version_tag=row["version_tag"],
+                image_name=row["image_name"],
+                config_snapshot=json.loads(row["config_snapshot"]),
+                created_at=row["created_at"],
+            )
+        finally:
+            if self.db.db_path != ":memory:":
+                conn.close()
+
+    def list_by_app(self, app_id: str, limit: int = 50) -> list[DeploymentRevision]:
+        conn = self.db.get_connection()
+        try:
+            cursor = conn.execute(
+                "SELECT id, app_id, version_tag, image_name, config_snapshot, created_at FROM deployment_revisions WHERE app_id = ? ORDER BY created_at DESC LIMIT ?",
+                (app_id, limit),
+            )
+            rows = cursor.fetchall()
+            return [
+                DeploymentRevision(
+                    id=row["id"],
+                    app_id=row["app_id"],
+                    version_tag=row["version_tag"],
+                    image_name=row["image_name"],
+                    config_snapshot=json.loads(row["config_snapshot"]),
+                    created_at=row["created_at"],
+                )
+                for row in rows
+            ]
         finally:
             if self.db.db_path != ":memory:":
                 conn.close()

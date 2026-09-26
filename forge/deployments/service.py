@@ -25,6 +25,7 @@ from forge.storage.repository import (
     DeploymentRepository,
     EnvironmentRepository,
     EventRepository,
+    RevisionRepository,
 )
 
 
@@ -44,6 +45,7 @@ class DeploymentService:
         self.dep_repo = DeploymentRepository(db)
         self.event_repo = EventRepository(db)
         self.env_repo = EnvironmentRepository(db)
+        self.rev_repo = RevisionRepository(db)
 
         self._locks_mutex = threading.Lock()
         self._app_locks: dict[str, threading.Lock] = {}
@@ -179,10 +181,17 @@ class DeploymentService:
             )
             raise DeploymentFailedError(f"Build failed for '{app.name}': {exc}") from exc
 
+        rev = self.rev_repo.create(
+            app_id=app.id,
+            version_tag=tag.split(":")[-1] if ":" in tag else tag,
+            image_name=tag,
+            config_snapshot={"container_port": app.container_port, "domain": app.domain},
+        )
+
         self.event_repo.record(
             app_id=app.id,
             event_kind=EventKind.DEPLOYMENT_BUILD_SUCCEEDED,
-            payload={"image_tag": tag},
+            payload={"image_tag": tag, "revision_id": rev.id},
             deployment_id=dep.id,
         )
 
@@ -191,6 +200,7 @@ class DeploymentService:
             dep.id,
             DeploymentStatus.STARTING,
             candidate_container_id=candidate_name,
+            revision_id=rev.id,
         )
 
         labels = self.proxy.generate_labels(
@@ -335,3 +345,149 @@ class DeploymentService:
                 return True
             time.sleep(interval)
         return False
+
+    def rollback(self, app_id: str, target_deployment_id: str | None = None) -> Deployment:
+        app = self.app_repo.get_by_id(app_id)
+        if app is None:
+            raise EntityNotFoundError(f"Application '{app_id}' not found")
+
+        lock = self._get_app_lock(app.id)
+        acquired = lock.acquire(blocking=False)
+        if not acquired:
+            raise ConcurrencyError(
+                f"Deployment already in progress for application '{app.name}' ({app.id})"
+            )
+
+        try:
+            current_active = self.dep_repo.get_active_deployment(app.id)
+
+            if target_deployment_id:
+                target_dep = self.dep_repo.get_by_id(target_deployment_id)
+                if target_dep is None or target_dep.app_id != app.id:
+                    raise EntityNotFoundError(f"Target deployment '{target_deployment_id}' not found")
+            else:
+                history = self.dep_repo.list_by_app(app.id, limit=20)
+                target_dep = None
+                for d in history:
+                    if (current_active is None or d.id != current_active.id) and d.status in (
+                        DeploymentStatus.STOPPED,
+                        DeploymentStatus.ACTIVE,
+                    ):
+                        target_dep = d
+                        break
+                if target_dep is None:
+                    raise ValidationError("No previous successful deployment found to roll back to")
+
+            image_tag = None
+            if target_dep.revision_id:
+                rev = self.rev_repo.get_by_id(target_dep.revision_id)
+                if rev:
+                    image_tag = rev.image_name
+
+            if not image_tag:
+                image_tag = f"{app.name}:latest"
+
+            self.event_repo.record(
+                app_id=app.id,
+                event_kind=EventKind.DEPLOYMENT_ROLLBACK_STARTED,
+                payload={
+                    "target_deployment_id": target_dep.id,
+                    "current_active_deployment_id": current_active.id if current_active else None,
+                    "image_tag": image_tag,
+                },
+            )
+
+            rollback_dep = self.dep_repo.create(
+                app.id,
+                revision_id=target_dep.revision_id,
+                status=DeploymentStatus.PENDING,
+            )
+
+            candidate_name = f"{app.name}-rb-{uuid.uuid4().hex[:7]}"
+            rollback_dep = self.dep_repo.update_status(
+                rollback_dep.id,
+                DeploymentStatus.BUILDING,
+            )
+            rollback_dep = self.dep_repo.update_status(
+                rollback_dep.id,
+                DeploymentStatus.STARTING,
+                candidate_container_id=candidate_name,
+            )
+
+            labels = self.proxy.generate_labels(
+                app_name=app.name,
+                domain=app.domain,
+                port=app.container_port,
+                is_candidate=True,
+            )
+            labels["forge.managed"] = "true"
+            labels["forge.app"] = app.name
+            labels["forge.deployment_id"] = rollback_dep.id
+            env_vars = self.env_repo.get_vars(app.id)
+
+            try:
+                self.runtime.create_container(
+                    image_tag=image_tag,
+                    container_name=candidate_name,
+                    network="forge-net",
+                    labels=labels,
+                    env_vars=env_vars,
+                    port=app.container_port,
+                    restart_policy="no",
+                )
+                self.runtime.start_container(candidate_name)
+                state = self.runtime.inspect_container(candidate_name)
+            except Exception as exc:
+                self.runtime.remove_container(candidate_name, force=True)
+                self.dep_repo.update_status(rollback_dep.id, DeploymentStatus.FAILED, error_message=str(exc))
+                raise DeploymentFailedError(f"Rollback container start failed: {exc}") from exc
+
+            if not state.running:
+                self.runtime.remove_container(candidate_name, force=True)
+                err_msg = f"Rollback container exited with code {state.exit_code}"
+                self.dep_repo.update_status(rollback_dep.id, DeploymentStatus.FAILED, error_message=err_msg)
+                raise DeploymentFailedError(err_msg, exit_code=state.exit_code)
+
+            rollback_dep = self.dep_repo.update_status(rollback_dep.id, DeploymentStatus.HEALTH_CHECKING)
+            is_healthy = self._run_health_check(
+                container_name=candidate_name,
+                port=app.container_port,
+                path="/health",
+                timeout=15.0,
+                interval=0.5,
+            )
+            if not is_healthy:
+                self.runtime.remove_container(candidate_name, force=True)
+                err_msg = f"Rollback health check failed on port {app.container_port}/health"
+                self.dep_repo.update_status(rollback_dep.id, DeploymentStatus.FAILED, error_message=err_msg)
+                raise DeploymentFailedError(err_msg)
+
+            rollback_dep = self.dep_repo.update_status(
+                rollback_dep.id,
+                DeploymentStatus.ACTIVE,
+                active_container_id=candidate_name,
+            )
+
+            if current_active is not None and current_active.active_container_id:
+                old_container = current_active.active_container_id
+                if old_container != candidate_name:
+                    try:
+                        self.dep_repo.update_status(current_active.id, DeploymentStatus.ROLLED_BACK)
+                        self.runtime.stop_container(old_container, timeout=10)
+                    except Exception:
+                        pass
+                    self.runtime.remove_container(old_container, force=True)
+
+            self.event_repo.record(
+                app_id=app.id,
+                event_kind=EventKind.DEPLOYMENT_ROLLBACK_COMPLETED,
+                payload={
+                    "rollback_deployment_id": rollback_dep.id,
+                    "target_deployment_id": target_dep.id,
+                    "active_container": candidate_name,
+                },
+                deployment_id=rollback_dep.id,
+            )
+            return rollback_dep
+        finally:
+            lock.release()
