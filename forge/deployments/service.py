@@ -54,9 +54,29 @@ class DeploymentService:
                 self._app_locks[app_id] = threading.Lock()
             return self._app_locks[app_id]
 
-    def deploy(
+    def create_deployment(self, app_id: str) -> Deployment:
+        app = self.app_repo.get_by_id(app_id)
+        if app is None:
+            raise EntityNotFoundError(f"Application '{app_id}' not found")
+
+        in_progress = self.dep_repo.get_in_progress_deployment(app_id)
+        if in_progress is not None:
+            raise ConcurrencyError(
+                f"Deployment already in progress for application '{app.name}' ({app.id})"
+            )
+
+        dep = self.dep_repo.create(app.id, status=DeploymentStatus.PENDING)
+        self.event_repo.record(
+            app_id=app.id,
+            event_kind=EventKind.DEPLOYMENT_CREATED,
+            payload={"deployment_id": dep.id, "app_name": app.name},
+            deployment_id=dep.id,
+        )
+        return dep
+
+    def execute_deployment(
         self,
-        app_id: str,
+        deployment_id: str,
         context_path: Path,
         health_check_path: str = "/health",
         health_check_timeout: float = 15.0,
@@ -66,15 +86,19 @@ class DeploymentService:
         # SEC-05: Strict SSRF protection on health_check_path
         validate_health_check_path(health_check_path)
 
-        app = self.app_repo.get_by_id(app_id)
+        dep = self.dep_repo.get_by_id(deployment_id)
+        if dep is None:
+            raise EntityNotFoundError(f"Deployment '{deployment_id}' not found")
+
+        app = self.app_repo.get_by_id(dep.app_id)
         if app is None:
-            raise EntityNotFoundError(f"Application '{app_id}' not found")
+            raise EntityNotFoundError(f"Application '{dep.app_id}' not found")
 
         dockerfile = context_path / "Dockerfile"
         if not dockerfile.is_file():
             raise FileNotFoundError(f"Dockerfile not found in '{context_path}'")
 
-        lock = self._get_app_lock(app_id)
+        lock = self._get_app_lock(app.id)
         # Concurrency protection: reject simultaneous deployments on same app
         acquired = lock.acquire(blocking=False)
         if not acquired:
@@ -85,6 +109,7 @@ class DeploymentService:
         try:
             return self._execute_deployment(
                 app=app,
+                dep=dep,
                 context_path=context_path,
                 health_check_path=health_check_path,
                 health_check_timeout=health_check_timeout,
@@ -94,9 +119,29 @@ class DeploymentService:
         finally:
             lock.release()
 
+    def deploy(
+        self,
+        app_id: str,
+        context_path: Path,
+        health_check_path: str = "/health",
+        health_check_timeout: float = 15.0,
+        health_check_interval: float = 0.5,
+        build_log_callback: Callable[[str], None] | None = None,
+    ) -> Deployment:
+        dep = self.create_deployment(app_id)
+        return self.execute_deployment(
+            deployment_id=dep.id,
+            context_path=context_path,
+            health_check_path=health_check_path,
+            health_check_timeout=health_check_timeout,
+            health_check_interval=health_check_interval,
+            build_log_callback=build_log_callback,
+        )
+
     def _execute_deployment(
         self,
         app: Application,
+        dep: Deployment,
         context_path: Path,
         health_check_path: str,
         health_check_timeout: float,
@@ -107,15 +152,6 @@ class DeploymentService:
         self.proxy.ensure_proxy()
 
         previous_active_dep = self.dep_repo.get_active_deployment(app.id)
-
-        # 1. State: PENDING
-        dep = self.dep_repo.create(app.id, status=DeploymentStatus.PENDING)
-        self.event_repo.record(
-            app_id=app.id,
-            event_kind=EventKind.DEPLOYMENT_CREATED,
-            payload={"deployment_id": dep.id, "app_name": app.name},
-            deployment_id=dep.id,
-        )
 
         tag = f"{app.name}:{uuid.uuid4().hex[:7]}"
         candidate_name = f"{app.name}-{uuid.uuid4().hex[:7]}"
@@ -163,6 +199,9 @@ class DeploymentService:
             port=app.container_port,
             is_candidate=True,
         )
+        labels["forge.managed"] = "true"
+        labels["forge.app"] = app.name
+        labels["forge.deployment_id"] = dep.id
         env_vars = self.env_repo.get_vars(app.id)
 
         try:

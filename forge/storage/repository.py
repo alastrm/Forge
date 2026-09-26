@@ -256,6 +256,120 @@ class DeploymentRepository:
             if self.db.db_path != ":memory:":
                 conn.close()
 
+    def get_in_progress_deployment(self, app_id: str) -> Deployment | None:
+        in_progress_statuses = (
+            DeploymentStatus.PENDING.value,
+            DeploymentStatus.BUILDING.value,
+            DeploymentStatus.STARTING.value,
+            DeploymentStatus.HEALTH_CHECKING.value,
+            DeploymentStatus.STOPPING.value,
+        )
+        placeholders = ",".join("?" for _ in in_progress_statuses)
+        conn = self.db.get_connection()
+        try:
+            cursor = conn.execute(
+                f"""
+                SELECT id, app_id, revision_id, status, candidate_container_id, active_container_id,
+                       error_message, created_at, started_at, finished_at
+                FROM deployments
+                WHERE app_id = ? AND status IN ({placeholders})
+                ORDER BY created_at DESC LIMIT 1
+                """,
+                (app_id, *in_progress_statuses),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return Deployment(
+                id=row["id"],
+                app_id=row["app_id"],
+                revision_id=row["revision_id"],
+                status=DeploymentStatus(row["status"]),
+                candidate_container_id=row["candidate_container_id"],
+                active_container_id=row["active_container_id"],
+                error_message=row["error_message"],
+                created_at=row["created_at"],
+                started_at=row["started_at"],
+                finished_at=row["finished_at"],
+            )
+        finally:
+            if self.db.db_path != ":memory:":
+                conn.close()
+
+    def list_in_progress(self) -> list[Deployment]:
+        in_progress_statuses = (
+            DeploymentStatus.PENDING.value,
+            DeploymentStatus.BUILDING.value,
+            DeploymentStatus.STARTING.value,
+            DeploymentStatus.HEALTH_CHECKING.value,
+            DeploymentStatus.STOPPING.value,
+        )
+        placeholders = ",".join("?" for _ in in_progress_statuses)
+        conn = self.db.get_connection()
+        try:
+            cursor = conn.execute(
+                f"""
+                SELECT id, app_id, revision_id, status, candidate_container_id, active_container_id,
+                       error_message, created_at, started_at, finished_at
+                FROM deployments
+                WHERE status IN ({placeholders})
+                ORDER BY created_at ASC
+                """,
+                in_progress_statuses,
+            )
+            rows = cursor.fetchall()
+            return [
+                Deployment(
+                    id=row["id"],
+                    app_id=row["app_id"],
+                    revision_id=row["revision_id"],
+                    status=DeploymentStatus(row["status"]),
+                    candidate_container_id=row["candidate_container_id"],
+                    active_container_id=row["active_container_id"],
+                    error_message=row["error_message"],
+                    created_at=row["created_at"],
+                    started_at=row["started_at"],
+                    finished_at=row["finished_at"],
+                )
+                for row in rows
+            ]
+        finally:
+            if self.db.db_path != ":memory:":
+                conn.close()
+
+    def list_all_active(self) -> list[Deployment]:
+        conn = self.db.get_connection()
+        try:
+            cursor = conn.execute(
+                """
+                SELECT id, app_id, revision_id, status, candidate_container_id, active_container_id,
+                       error_message, created_at, started_at, finished_at
+                FROM deployments
+                WHERE status = ?
+                ORDER BY created_at ASC
+                """,
+                (DeploymentStatus.ACTIVE.value,),
+            )
+            rows = cursor.fetchall()
+            return [
+                Deployment(
+                    id=row["id"],
+                    app_id=row["app_id"],
+                    revision_id=row["revision_id"],
+                    status=DeploymentStatus(row["status"]),
+                    candidate_container_id=row["candidate_container_id"],
+                    active_container_id=row["active_container_id"],
+                    error_message=row["error_message"],
+                    created_at=row["created_at"],
+                    started_at=row["started_at"],
+                    finished_at=row["finished_at"],
+                )
+                for row in rows
+            ]
+        finally:
+            if self.db.db_path != ":memory:":
+                conn.close()
+
     def update_status(
         self,
         deployment_id: str,

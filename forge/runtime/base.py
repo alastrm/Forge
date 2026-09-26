@@ -65,3 +65,7 @@ class Runtime(abc.ABC):
     @abc.abstractmethod
     def logs(self, container_id: str, tail: int = 100) -> str:
         """Fetch container logs."""
+
+    @abc.abstractmethod
+    def list_containers(self, label_filters: dict[str, str] | None = None) -> list[str]:
+        """List container names, optionally filtered by labels."""

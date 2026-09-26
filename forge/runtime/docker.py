@@ -246,3 +246,21 @@ class DockerRuntime(Runtime):
             return (result.stdout + result.stderr).strip()
         except (subprocess.TimeoutExpired, OSError) as exc:
             raise DockerRuntimeError(f"Failed to fetch logs for '{container_id}': {exc}") from exc
+
+    def list_containers(self, label_filters: dict[str, str] | None = None) -> list[str]:
+        command = ["docker", "ps", "-a", "--format", "{{.Names}}"]
+        if label_filters:
+            for k, v in label_filters.items():
+                command.extend(["--filter", f"label={k}={v}"])
+        try:
+            result = subprocess.run(
+                command,
+                text=True,
+                capture_output=True,
+                timeout=self.timeout,
+            )
+            if result.returncode != 0:
+                raise DockerRuntimeError(f"Failed to list containers: {result.stderr.strip()}")
+            return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            raise DockerRuntimeError(f"Failed to list containers: {exc}") from exc

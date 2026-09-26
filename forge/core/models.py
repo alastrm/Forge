@@ -81,6 +81,9 @@ class EventKind(str, Enum):
     DEPLOYMENT_STOPPED = "deployment.stopped"
     DEPLOYMENT_ROLLBACK_STARTED = "deployment.rollback_started"
     DEPLOYMENT_ROLLBACK_COMPLETED = "deployment.rollback_completed"
+    CONTAINER_CRASHED = "container.crashed"
+    CONTAINER_ORPHAN_CLEANED = "container.orphan_cleaned"
+    RECONCILIATION_RUN = "reconciliation.run"
 
 
 # Security validation regex patterns

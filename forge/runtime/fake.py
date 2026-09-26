@@ -123,3 +123,14 @@ class FakeRuntime(Runtime):
         if container_id in self.containers:
             return str(self.containers[container_id].get("logs", ""))
         return ""
+
+    def list_containers(self, label_filters: dict[str, str] | None = None) -> list[str]:
+        result: list[str] = []
+        for name, data in self.containers.items():
+            if label_filters is None:
+                result.append(name)
+                continue
+            labels = data.get("labels", {})
+            if all(labels.get(k) == v for k, v in label_filters.items()):
+                result.append(name)
+        return result

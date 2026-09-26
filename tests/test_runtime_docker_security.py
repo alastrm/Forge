@@ -107,5 +107,21 @@ class TestRuntimeDockerSecurity(unittest.TestCase):
             )
 
 
+    @patch("subprocess.run")
+    def test_docker_list_containers_with_filters(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="app-cand-1\napp-active-2\n", stderr=""
+        )
+
+        containers = self.runtime.list_containers(label_filters={"forge.managed": "true"})
+        mock_run.assert_called_once()
+        cmd = mock_run.call_args[0][0]
+
+        self.assertIn("ps", cmd)
+        self.assertIn("--filter", cmd)
+        self.assertIn("label=forge.managed=true", cmd)
+        self.assertEqual(containers, ["app-cand-1", "app-active-2"])
+
+
 if __name__ == "__main__":
     unittest.main()
