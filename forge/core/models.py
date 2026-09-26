@@ -42,6 +42,7 @@ ALLOWED_TRANSITIONS: dict[DeploymentStatus, set[DeploymentStatus]] = {
     },
     DeploymentStatus.ACTIVE: {
         DeploymentStatus.STOPPING,
+        DeploymentStatus.STOPPED,
         DeploymentStatus.FAILED,
         DeploymentStatus.ROLLED_BACK,
     },
