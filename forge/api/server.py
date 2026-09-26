@@ -11,9 +11,11 @@ from forge.core.errors import (
     ConcurrencyError,
     EntityNotFoundError,
     ForgeError,
+    PayloadTooLargeError,
     ValidationError,
 )
 from forge.core.models import DeploymentStatus
+from forge.core.scrubber import scrub_text
 from forge.deployments.service import DeploymentService
 from forge.proxy.base import Proxy
 from forge.runtime.base import Runtime
@@ -56,8 +58,26 @@ class ForgeRequestHandler(BaseHTTPRequestHandler):
             },
         )
 
+    # Priority 5: Add strict request body size limits (10 MB maximum)
+    MAX_BODY_SIZE = 10 * 1024 * 1024
+
     def _parse_json_body(self) -> dict[str, Any]:
-        content_length = int(self.headers.get("Content-Length", 0))
+        cl_header = self.headers.get("Content-Length")
+        if cl_header is None:
+            return {}
+        try:
+            content_length = int(cl_header)
+        except ValueError:
+            raise ValidationError("Invalid Content-Length header")
+
+        if content_length < 0:
+            raise ValidationError("Negative Content-Length header is forbidden")
+
+        if content_length > self.MAX_BODY_SIZE:
+            raise PayloadTooLargeError(
+                f"Payload size ({content_length} bytes) exceeds maximum allowed limit of {self.MAX_BODY_SIZE} bytes"
+            )
+
         if content_length == 0:
             return {}
         raw = self.rfile.read(content_length).decode("utf-8")
@@ -221,13 +241,16 @@ class ForgeRequestHandler(BaseHTTPRequestHandler):
                 if not active_dep or not active_dep.active_container_id:
                     self._send_json(200, {"app_id": app_id, "logs": ""})
                     return
-                logs = self.server.runtime.logs(active_dep.active_container_id, tail=tail)
+                raw_logs = self.server.runtime.logs(active_dep.active_container_id, tail=tail)
+                # Priority 7: Zero-leak logs - scrub all configured secrets and sensitive patterns
+                app_env = self.server.env_repo.get_vars(app_id)
+                scrubbed_logs = scrub_text(raw_logs, secrets=list(app_env.values()))
                 self._send_json(
                     200,
                     {
                         "app_id": app_id,
                         "container_id": active_dep.active_container_id,
-                        "logs": logs,
+                        "logs": scrubbed_logs,
                     },
                 )
                 return
@@ -282,6 +305,21 @@ class ForgeRequestHandler(BaseHTTPRequestHandler):
                 if not context_path_raw:
                     raise ValidationError("Field 'context_path' is required")
                 context_path = Path(context_path_raw).resolve()
+                if not context_path.exists():
+                    raise ValidationError(f"Build context path does not exist: '{context_path}'")
+                if not context_path.is_dir():
+                    raise ValidationError(f"Build context path must be a directory: '{context_path}'")
+
+                # Priority 4: Restrict deployment build context to an explicit workspace boundary.
+                if self.server.workspace_boundary is not None:
+                    allowed_boundary = self.server.workspace_boundary.resolve()
+                    try:
+                        context_path.relative_to(allowed_boundary)
+                    except ValueError:
+                        raise ValidationError(
+                            f"Security violation: Build context path '{context_path}' is outside authorized workspace boundary '{allowed_boundary}'"
+                        )
+
                 health_check_path = body.get("health_check_path", "/health")
                 health_check_timeout = float(body.get("health_check_timeout", 15.0))
                 health_check_interval = float(body.get("health_check_interval", 0.5))
@@ -331,6 +369,8 @@ class ForgeRequestHandler(BaseHTTPRequestHandler):
             self._send_error(404, "not_found", f"Endpoint '{path}' not found")
         except EntityNotFoundError as exc:
             self._send_error(404, "not_found", str(exc))
+        except PayloadTooLargeError as exc:
+            self._send_error(413, "payload_too_large", str(exc))
         except ValidationError as exc:
             self._send_error(400, "validation_error", str(exc))
         except ConcurrencyError as exc:
@@ -375,6 +415,7 @@ class ForgeThreadingServer(ThreadingHTTPServer):
         proxy: Proxy,
         api_token: str | None = None,
         reconcile_interval: float = 10.0,
+        workspace_boundary: Path | str | None = None,
     ) -> None:
         # SEC-04: Ensure server binds strictly to localhost unless overridden
         host, _ = server_address
@@ -388,6 +429,7 @@ class ForgeThreadingServer(ThreadingHTTPServer):
         self.runtime = runtime
         self.proxy = proxy
         self.auth = ApiAuth(api_token)
+        self.workspace_boundary = Path(workspace_boundary).resolve() if workspace_boundary is not None else None
 
         self.app_repo = ApplicationRepository(db)
         self.dep_repo = DeploymentRepository(db)
@@ -418,6 +460,7 @@ class ForgeApiServer:
         port: int = 8000,
         api_token: str | None = None,
         reconcile_interval: float = 10.0,
+        workspace_boundary: Path | str | None = None,
     ) -> None:
         self.host = host
         self.port = port
@@ -426,6 +469,7 @@ class ForgeApiServer:
         self.proxy = proxy
         self.api_token = api_token
         self.reconcile_interval = reconcile_interval
+        self.workspace_boundary = Path(workspace_boundary).resolve() if workspace_boundary is not None else None
 
         self._server: ForgeThreadingServer | None = None
         self._thread: threading.Thread | None = None
@@ -457,6 +501,7 @@ class ForgeApiServer:
             proxy=self.proxy,
             api_token=self.api_token,
             reconcile_interval=self.reconcile_interval,
+            workspace_boundary=self.workspace_boundary,
         )
 
         # Start background workers

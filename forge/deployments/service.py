@@ -49,6 +49,8 @@ class DeploymentService:
 
         self._locks_mutex = threading.Lock()
         self._app_locks: dict[str, threading.Lock] = {}
+        self._in_flight_mutex = threading.Lock()
+        self._in_flight_deployments: set[str] = set()
 
     def _get_app_lock(self, app_id: str) -> threading.Lock:
         with self._locks_mutex:
@@ -56,25 +58,48 @@ class DeploymentService:
                 self._app_locks[app_id] = threading.Lock()
             return self._app_locks[app_id]
 
+    def register_in_flight(self, deployment_id: str) -> None:
+        with self._in_flight_mutex:
+            self._in_flight_deployments.add(deployment_id)
+
+    def unregister_in_flight(self, deployment_id: str) -> None:
+        with self._in_flight_mutex:
+            self._in_flight_deployments.discard(deployment_id)
+
+    def get_in_flight_deployment_ids(self) -> set[str]:
+        with self._in_flight_mutex:
+            return set(self._in_flight_deployments)
+
     def create_deployment(self, app_id: str) -> Deployment:
         app = self.app_repo.get_by_id(app_id)
         if app is None:
             raise EntityNotFoundError(f"Application '{app_id}' not found")
 
-        in_progress = self.dep_repo.get_in_progress_deployment(app_id)
-        if in_progress is not None:
+        # Priority 2: Fix deployment creation race at the persistence/concurrency boundary.
+        # Acquire app lock so concurrent requests for same app cannot race between check and insert.
+        lock = self._get_app_lock(app.id)
+        acquired = lock.acquire(blocking=False)
+        if not acquired:
             raise ConcurrencyError(
                 f"Deployment already in progress for application '{app.name}' ({app.id})"
             )
+        try:
+            in_progress = self.dep_repo.get_in_progress_deployment(app_id)
+            if in_progress is not None:
+                raise ConcurrencyError(
+                    f"Deployment already in progress for application '{app.name}' ({app.id})"
+                )
 
-        dep = self.dep_repo.create(app.id, status=DeploymentStatus.PENDING)
-        self.event_repo.record(
-            app_id=app.id,
-            event_kind=EventKind.DEPLOYMENT_CREATED,
-            payload={"deployment_id": dep.id, "app_name": app.name},
-            deployment_id=dep.id,
-        )
-        return dep
+            dep = self.dep_repo.create(app.id, status=DeploymentStatus.PENDING)
+            self.event_repo.record(
+                app_id=app.id,
+                event_kind=EventKind.DEPLOYMENT_CREATED,
+                payload={"deployment_id": dep.id, "app_name": app.name},
+                deployment_id=dep.id,
+            )
+            return dep
+        finally:
+            lock.release()
 
     def execute_deployment(
         self,
@@ -108,6 +133,7 @@ class DeploymentService:
                 f"Deployment already in progress for application '{app.name}' ({app.id})"
             )
 
+        self.register_in_flight(dep.id)
         try:
             return self._execute_deployment(
                 app=app,
@@ -119,6 +145,7 @@ class DeploymentService:
                 build_log_callback=build_log_callback,
             )
         finally:
+            self.unregister_in_flight(dep.id)
             lock.release()
 
     def deploy(
@@ -289,11 +316,27 @@ class DeploymentService:
             deployment_id=dep.id,
         )
 
-        # 5. State: ACTIVE (Promotion)
+        # 5. Promotion & Decommission previous active deployment
+        # Decommission previous active deployment if existed (transition to STOPPING before candidate is ACTIVE)
+        if previous_active_dep is not None and previous_active_dep.id != dep.id:
+            try:
+                self.dep_repo.update_status(previous_active_dep.id, DeploymentStatus.STOPPING)
+            except Exception:
+                pass
+
+        # State: ACTIVE (Promotion)
         dep = self.dep_repo.update_status(
             dep.id,
             DeploymentStatus.ACTIVE,
             active_container_id=candidate_name,
+        )
+        # Priority 1: Traefik candidate must never receive traffic before promotion.
+        # Now that candidate is active, configure proxy routing to switch traffic to it.
+        self.proxy.promote_service(
+            app_name=app.name,
+            domain=app.domain,
+            container_name=candidate_name,
+            port=app.container_port,
         )
         self.event_repo.record(
             app_id=app.id,
@@ -302,12 +345,11 @@ class DeploymentService:
             deployment_id=dep.id,
         )
 
-        # 6. Decommission previous active deployment if existed
+        # 6. Finalize decommission of old container
         if previous_active_dep is not None:
             old_container = previous_active_dep.active_container_id
             if old_container and old_container != candidate_name:
                 try:
-                    self.dep_repo.update_status(previous_active_dep.id, DeploymentStatus.STOPPING)
                     self.runtime.stop_container(old_container, timeout=10)
                 except Exception:
                     pass
@@ -330,15 +372,32 @@ class DeploymentService:
         timeout: float,
         interval: float,
     ) -> bool:
-        python_script = (
-            f"import urllib.request, sys; "
-            f"sys.exit(0 if 200 <= urllib.request.urlopen('http://127.0.0.1:{port}{path}', timeout=2).getcode() < 400 else 1)"
-        )
+        # Priority 10: Remove Python-only assumptions from health-check mechanism.
+        # Multi-strategy probe: curl -> wget -> python3/python -> node -> /dev/tcp.
+        probe_cmd = [
+            "sh",
+            "-c",
+            (
+                f"if command -v curl >/dev/null 2>&1; then "
+                f"curl -fsSL -o /dev/null http://127.0.0.1:{port}{path}; "
+                f"elif command -v wget >/dev/null 2>&1; then "
+                f"wget -q -O - http://127.0.0.1:{port}{path} >/dev/null 2>&1; "
+                f"elif command -v python3 >/dev/null 2>&1; then "
+                f"python3 -c \"import urllib.request, sys; sys.exit(0 if 200 <= urllib.request.urlopen('http://127.0.0.1:{port}{path}', timeout=2).getcode() < 400 else 1)\"; "
+                f"elif command -v python >/dev/null 2>&1; then "
+                f"python -c \"import urllib.request, sys; sys.exit(0 if 200 <= urllib.request.urlopen('http://127.0.0.1:{port}{path}', timeout=2).getcode() < 400 else 1)\"; "
+                f"elif command -v node >/dev/null 2>&1; then "
+                f"node -e \"const http=require('http'); http.get('http://127.0.0.1:{port}{path}', (r) => process.exit(r.statusCode < 400 ? 0 : 1)).on('error', () => process.exit(1));\"; "
+                f"else "
+                f"(echo -e 'GET {path} HTTP/1.0\\r\\nHost: 127.0.0.1\\r\\n\\r\\n' > /dev/tcp/127.0.0.1/{port}) 2>/dev/null; "
+                f"fi"
+            ),
+        ]
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             exec_res = self.runtime.exec(
                 container_id=container_name,
-                cmd=["python", "-c", python_script],
+                cmd=probe_cmd,
                 timeout=min(5.0, timeout),
             )
             if exec_res.exit_code == 0:
@@ -403,91 +462,116 @@ class DeploymentService:
                 status=DeploymentStatus.PENDING,
             )
 
-            candidate_name = f"{app.name}-rb-{uuid.uuid4().hex[:7]}"
-            rollback_dep = self.dep_repo.update_status(
-                rollback_dep.id,
-                DeploymentStatus.BUILDING,
-            )
-            rollback_dep = self.dep_repo.update_status(
-                rollback_dep.id,
-                DeploymentStatus.STARTING,
-                candidate_container_id=candidate_name,
-            )
-
-            labels = self.proxy.generate_labels(
-                app_name=app.name,
-                domain=app.domain,
-                port=app.container_port,
-                is_candidate=True,
-            )
-            labels["forge.managed"] = "true"
-            labels["forge.app"] = app.name
-            labels["forge.deployment_id"] = rollback_dep.id
-            env_vars = self.env_repo.get_vars(app.id)
-
+            # Priority 3: Fix rollback vs reconciler ownership race.
+            # Register rollback deployment as in-flight so reconciler does not touch it.
+            self.register_in_flight(rollback_dep.id)
             try:
-                self.runtime.create_container(
-                    image_tag=image_tag,
-                    container_name=candidate_name,
-                    network="forge-net",
-                    labels=labels,
-                    env_vars=env_vars,
-                    port=app.container_port,
-                    restart_policy="no",
+                candidate_name = f"{app.name}-rb-{uuid.uuid4().hex[:7]}"
+                rollback_dep = self.dep_repo.update_status(
+                    rollback_dep.id,
+                    DeploymentStatus.BUILDING,
                 )
-                self.runtime.start_container(candidate_name)
-                state = self.runtime.inspect_container(candidate_name)
-            except Exception as exc:
-                self.runtime.remove_container(candidate_name, force=True)
-                self.dep_repo.update_status(rollback_dep.id, DeploymentStatus.FAILED, error_message=str(exc))
-                raise DeploymentFailedError(f"Rollback container start failed: {exc}") from exc
+                rollback_dep = self.dep_repo.update_status(
+                    rollback_dep.id,
+                    DeploymentStatus.STARTING,
+                    candidate_container_id=candidate_name,
+                )
 
-            if not state.running:
-                self.runtime.remove_container(candidate_name, force=True)
-                err_msg = f"Rollback container exited with code {state.exit_code}"
-                self.dep_repo.update_status(rollback_dep.id, DeploymentStatus.FAILED, error_message=err_msg)
-                raise DeploymentFailedError(err_msg, exit_code=state.exit_code)
+                labels = self.proxy.generate_labels(
+                    app_name=app.name,
+                    domain=app.domain,
+                    port=app.container_port,
+                    is_candidate=True,
+                )
+                labels["forge.managed"] = "true"
+                labels["forge.app"] = app.name
+                labels["forge.deployment_id"] = rollback_dep.id
+                env_vars = self.env_repo.get_vars(app.id)
 
-            rollback_dep = self.dep_repo.update_status(rollback_dep.id, DeploymentStatus.HEALTH_CHECKING)
-            is_healthy = self._run_health_check(
-                container_name=candidate_name,
-                port=app.container_port,
-                path="/health",
-                timeout=15.0,
-                interval=0.5,
-            )
-            if not is_healthy:
-                self.runtime.remove_container(candidate_name, force=True)
-                err_msg = f"Rollback health check failed on port {app.container_port}/health"
-                self.dep_repo.update_status(rollback_dep.id, DeploymentStatus.FAILED, error_message=err_msg)
-                raise DeploymentFailedError(err_msg)
+                try:
+                    self.runtime.create_container(
+                        image_tag=image_tag,
+                        container_name=candidate_name,
+                        network="forge-net",
+                        labels=labels,
+                        env_vars=env_vars,
+                        port=app.container_port,
+                        restart_policy="no",
+                    )
+                    self.runtime.start_container(candidate_name)
+                    state = self.runtime.inspect_container(candidate_name)
+                except Exception as exc:
+                    self.runtime.remove_container(candidate_name, force=True)
+                    self.dep_repo.update_status(rollback_dep.id, DeploymentStatus.FAILED, error_message=str(exc))
+                    raise DeploymentFailedError(f"Rollback container start failed: {exc}") from exc
 
-            rollback_dep = self.dep_repo.update_status(
-                rollback_dep.id,
-                DeploymentStatus.ACTIVE,
-                active_container_id=candidate_name,
-            )
+                if not state.running:
+                    self.runtime.remove_container(candidate_name, force=True)
+                    err_msg = f"Rollback container exited with code {state.exit_code}"
+                    self.dep_repo.update_status(rollback_dep.id, DeploymentStatus.FAILED, error_message=err_msg)
+                    raise DeploymentFailedError(err_msg, exit_code=state.exit_code)
 
-            if current_active is not None and current_active.active_container_id:
-                old_container = current_active.active_container_id
-                if old_container != candidate_name:
+                rollback_dep = self.dep_repo.update_status(rollback_dep.id, DeploymentStatus.HEALTH_CHECKING)
+                is_healthy = self._run_health_check(
+                    container_name=candidate_name,
+                    port=app.container_port,
+                    path="/health",
+                    timeout=15.0,
+                    interval=0.5,
+                )
+                if not is_healthy:
+                    self.runtime.remove_container(candidate_name, force=True)
+                    err_msg = f"Rollback health check failed on port {app.container_port}/health"
+                    self.dep_repo.update_status(rollback_dep.id, DeploymentStatus.FAILED, error_message=err_msg)
+                    raise DeploymentFailedError(err_msg)
+
+                # Transition current active to STOPPING before promoting rollback_dep to ACTIVE
+                if current_active is not None and current_active.id != rollback_dep.id:
                     try:
-                        self.dep_repo.update_status(current_active.id, DeploymentStatus.ROLLED_BACK)
-                        self.runtime.stop_container(old_container, timeout=10)
+                        self.dep_repo.update_status(current_active.id, DeploymentStatus.STOPPING)
                     except Exception:
                         pass
-                    self.runtime.remove_container(old_container, force=True)
 
-            self.event_repo.record(
-                app_id=app.id,
-                event_kind=EventKind.DEPLOYMENT_ROLLBACK_COMPLETED,
-                payload={
-                    "rollback_deployment_id": rollback_dep.id,
-                    "target_deployment_id": target_dep.id,
-                    "active_container": candidate_name,
-                },
-                deployment_id=rollback_dep.id,
-            )
-            return rollback_dep
+                rollback_dep = self.dep_repo.update_status(
+                    rollback_dep.id,
+                    DeploymentStatus.ACTIVE,
+                    active_container_id=candidate_name,
+                )
+                self.proxy.promote_service(
+                    app_name=app.name,
+                    domain=app.domain,
+                    container_name=candidate_name,
+                    port=app.container_port,
+                )
+
+                if current_active is not None and current_active.active_container_id:
+                    old_container = current_active.active_container_id
+                    if old_container != candidate_name:
+                        try:
+                            self.runtime.stop_container(old_container, timeout=10)
+                        except Exception:
+                            pass
+                        self.runtime.remove_container(old_container, force=True)
+                        self.dep_repo.update_status(current_active.id, DeploymentStatus.ROLLED_BACK)
+                        self.event_repo.record(
+                            app_id=app.id,
+                            event_kind=EventKind.DEPLOYMENT_STOPPED,
+                            payload={"stopped_container": old_container},
+                            deployment_id=current_active.id,
+                        )
+
+                self.event_repo.record(
+                    app_id=app.id,
+                    event_kind=EventKind.DEPLOYMENT_ROLLBACK_COMPLETED,
+                    payload={
+                        "rollback_deployment_id": rollback_dep.id,
+                        "target_deployment_id": target_dep.id,
+                        "active_container": candidate_name,
+                    },
+                    deployment_id=rollback_dep.id,
+                )
+                return rollback_dep
+            finally:
+                self.unregister_in_flight(rollback_dep.id)
         finally:
             lock.release()

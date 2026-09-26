@@ -1,7 +1,9 @@
 import argparse
 import json
 import os
+import signal
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -68,6 +70,7 @@ def build_parser() -> argparse.ArgumentParser:
     server_parser.add_argument("--host", default="127.0.0.1", help="Bind host (default: 127.0.0.1)")
     server_parser.add_argument("--port", type=int, default=8000, help="Bind port (default: 8000)")
     server_parser.add_argument("--db", default="forge.db", help="Path to SQLite database file")
+    server_parser.add_argument("--workspace", default=None, help="Authorized workspace directory boundary")
 
     # forge app
     app_parser = subparsers.add_parser("app", help="Manage applications")
@@ -125,16 +128,40 @@ def cmd_server(args: argparse.Namespace) -> None:
         host=args.host,
         port=args.port,
         api_token=args.token,
+        workspace_boundary=args.workspace,
     )
     print(f"Starting Forge Control Plane on http://{args.host}:{args.port}")
     server.start()
+
+    shutdown_event = setup_signal_handlers(server)
+
     try:
-        while True:
-            time.sleep(1.0)
+        while not shutdown_event.is_set():
+            shutdown_event.wait(timeout=0.5)
     except KeyboardInterrupt:
-        print("\nShutting down Forge server...")
-        server.stop()
-        print("Forge server stopped.")
+        shutdown_event.set()
+
+    print("\nShutting down Forge server...")
+    server.stop()
+    print("Forge server stopped.")
+
+
+def setup_signal_handlers(server: Any) -> threading.Event:
+    """Register SIGINT and SIGTERM handlers to gracefully stop the Forge server."""
+    shutdown_event = threading.Event()
+
+    def _sig_handler(signum: int, frame: Any) -> None:
+        shutdown_event.set()
+        try:
+            server.stop()
+        except Exception:
+            pass
+
+    signal.signal(signal.SIGINT, _sig_handler)
+    if hasattr(signal, "SIGTERM"):
+        signal.signal(signal.SIGTERM, _sig_handler)
+
+    return shutdown_event
 
 
 def cmd_app_create(client: ForgeApiClient, args: argparse.Namespace) -> None:

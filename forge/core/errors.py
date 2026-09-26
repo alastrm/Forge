@@ -26,3 +26,7 @@ class ConcurrencyError(ForgeError):
 
 class StorageError(ForgeError):
     """Raised when an underlying database operation fails."""
+
+
+class PayloadTooLargeError(ForgeError):
+    """Raised when an incoming HTTP request exceeds the maximum allowed body size."""

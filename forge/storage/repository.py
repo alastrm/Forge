@@ -3,7 +3,7 @@ import sqlite3
 import uuid
 from typing import Any
 
-from forge.core.errors import EntityNotFoundError, StorageError
+from forge.core.errors import ConcurrencyError, EntityNotFoundError, StorageError
 from forge.core.models import (
     Application,
     Deployment,
@@ -15,6 +15,7 @@ from forge.core.models import (
     utc_now,
     validate_transition,
 )
+from forge.core.scrubber import scrub_dict as scrub_secrets
 from forge.storage.db import Database
 
 
@@ -159,6 +160,10 @@ class DeploymentRepository:
             )
             conn.commit()
             return deployment
+        except sqlite3.IntegrityError as exc:
+            raise ConcurrencyError(
+                f"Cannot create deployment: another deployment is currently active or in-progress for application '{app_id}'"
+            ) from exc
         finally:
             if self.db.db_path != ":memory:":
                 conn.close()
@@ -434,6 +439,10 @@ class DeploymentRepository:
                 started_at=started_at,
                 finished_at=finished_at,
             )
+        except sqlite3.IntegrityError as exc:
+            raise ConcurrencyError(
+                f"Cannot transition deployment to '{target_status.value}': constraint violation (active/in-progress limit reached)"
+            ) from exc
         finally:
             if self.db.db_path != ":memory:":
                 conn.close()
@@ -532,13 +541,14 @@ class EventRepository:
         payload: dict[str, Any],
         deployment_id: str | None = None,
     ) -> Event:
-        # Zero-leak: Event validation ensures raw env vars are forbidden
+        # Zero-leak: Event validation ensures raw env vars and secrets are scrubbed
+        scrubbed_payload = scrub_secrets(payload)
         event = Event(
             id=f"evt-{uuid.uuid4().hex[:8]}",
             app_id=app_id,
             deployment_id=deployment_id,
             event_kind=event_kind,
-            payload=payload,
+            payload=scrubbed_payload,
         )
         payload_json = json.dumps(event.payload)
         conn = self.db.get_connection()

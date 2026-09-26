@@ -1,3 +1,4 @@
+import logging
 import threading
 from dataclasses import dataclass, field
 
@@ -11,6 +12,8 @@ from forge.storage.repository import (
     DeploymentRepository,
     EventRepository,
 )
+
+logger = logging.getLogger("forge.reconciler")
 
 
 @dataclass
@@ -56,6 +59,10 @@ class Reconciler:
         self.event_repo = EventRepository(db)
         self.app_repo = ApplicationRepository(db)
 
+        self.error_count: int = 0
+        self.last_error: str | None = None
+        self.started_at: str = utc_now()
+
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -73,15 +80,15 @@ class Reconciler:
         """Detect deployments left in intermediate states (e.g. after Forge server crash/restart)
         and mark them as FAILED while cleaning up candidate containers.
         """
-        in_flight_ids = (
-            self.job_queue.get_in_flight_deployment_ids()
-            if self.job_queue is not None
-            else set()
-        )
+        in_flight_ids = set()
+        if self.job_queue is not None:
+            in_flight_ids.update(self.job_queue.get_in_flight_deployment_ids())
+        if self.deployment_service is not None:
+            in_flight_ids.update(self.deployment_service.get_in_flight_deployment_ids())
 
         in_progress = self.dep_repo.list_in_progress()
         for dep in in_progress:
-            # If deployment is currently actively handled by worker, leave it alone
+            # Priority 3: If deployment is currently in-flight (queue worker or rollback), leave it alone
             if dep.id in in_flight_ids:
                 continue
 
@@ -89,8 +96,8 @@ class Reconciler:
             if dep.candidate_container_id:
                 try:
                     self.runtime.remove_container(dep.candidate_container_id, force=True)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("Failed to remove candidate container %s: %s", dep.candidate_container_id, exc)
 
             err_msg = "Deployment interrupted by server restart or process termination"
             self.dep_repo.update_status(
@@ -237,5 +244,8 @@ class Reconciler:
         while not self._stop_event.wait(self.interval):
             try:
                 self.reconcile_once()
-            except Exception:
-                pass
+            except Exception as exc:
+                # Priority 9: Stop silently swallowing reconciler exceptions; log/report them without killing the loop.
+                self.error_count += 1
+                self.last_error = str(exc)
+                logger.exception("Reconciler loop encountered error during reconciliation pass: %s", exc)

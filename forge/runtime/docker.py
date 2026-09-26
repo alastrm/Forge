@@ -13,6 +13,80 @@ class DockerRuntimeError(ForgeError):
     """Raised when an operation on DockerRuntime fails."""
 
 
+def validate_container_security(
+    network: str,
+    privileged: bool = False,
+    mounts: list[str] | None = None,
+    cap_add: list[str] | None = None,
+    devices: list[str] | None = None,
+    labels: dict[str, str] | None = None,
+) -> None:
+    """Validate that container configuration adheres to strict security baselines:
+    - No privileged mode
+    - No host / container networking
+    - No device mapping
+    - No dangerous capabilities (only NET_BIND_SERVICE allowed)
+    - No dangerous host mounts (docker.sock, root, etc.)
+    """
+    if privileged:
+        raise ValidationError("Privileged mode is strictly forbidden for application containers")
+
+    if network in ("host", "none") or network.startswith("container:"):
+        raise ValidationError(
+            f"Forbidden network mode '{network}'. Only isolated bridge networks (e.g. forge-net) are allowed."
+        )
+
+    if devices:
+        raise ValidationError("Direct host device access is strictly forbidden for application containers")
+
+    allowed_caps = {"NET_BIND_SERVICE"}
+    if cap_add:
+        for cap in cap_add:
+            cap_upper = cap.upper().removeprefix("CAP_")
+            if cap_upper == "ALL" or cap_upper not in allowed_caps:
+                raise ValidationError(
+                    f"Forbidden capability '{cap}'. Application containers only permit NET_BIND_SERVICE."
+                )
+
+    forbidden_mount_targets = (
+        "docker.sock",
+        "/var/run/docker.sock",
+        "//./pipe/docker_engine",
+        "/etc",
+        "/proc",
+        "/sys",
+        "/root",
+        "/bin",
+        "/sbin",
+        "/usr",
+        "/var/run",
+        "c:\\windows",
+        "c:\\program files",
+    )
+    if mounts:
+        for m in mounts:
+            parts = m.split(":")
+            if len(parts) >= 2 and len(parts[0]) == 1 and parts[0].isalpha() and parts[1].startswith(("\\", "/")):
+                host_path = parts[0] + ":" + parts[1]
+            else:
+                host_path = parts[0]
+
+            if not os.path.isabs(host_path):
+                raise ValidationError(f"Mount host source must be an absolute path: '{m}'")
+
+            m_lower = m.lower()
+            for forbidden in forbidden_mount_targets:
+                if forbidden in m_lower:
+                    raise ValidationError(
+                        f"Mounting '{m}' is strictly forbidden: violates container boundary isolation ({forbidden})"
+                    )
+
+    if labels:
+        for key, val in labels.items():
+            if "docker.sock" in str(key).lower() or "docker.sock" in str(val).lower():
+                raise ValidationError("Mounting or referencing docker.sock is strictly forbidden")
+
+
 class DockerRuntime(Runtime):
     def __init__(self, timeout: float = 120.0) -> None:
         self.timeout = timeout
@@ -80,11 +154,20 @@ class DockerRuntime(Runtime):
         memory_limit: str = "512m",
         cpu_limit: str = "1.0",
         pids_limit: int = 150,
+        privileged: bool = False,
+        mounts: list[str] | None = None,
+        cap_add: list[str] | None = None,
+        devices: list[str] | None = None,
     ) -> str:
-        # SEC-11: Docker socket mount denied
-        for key, val in labels.items():
-            if "docker.sock" in key or "docker.sock" in val:
-                raise ValidationError("Mounting docker.sock into application containers is strictly forbidden")
+        # Priority 6: Real validation of mounts, privileged mode, capabilities, devices and host networking.
+        validate_container_security(
+            network=network,
+            privileged=privileged,
+            mounts=mounts,
+            cap_add=cap_add,
+            devices=devices,
+            labels=labels,
+        )
 
         # SEC-09: Docker hardening flags & quotas
         command = [
@@ -102,6 +185,10 @@ class DockerRuntime(Runtime):
             f"--cpus={cpu_limit}",
             f"--pids-limit={pids_limit}",
         ]
+
+        if mounts:
+            for m in mounts:
+                command.extend(["-v", m])
 
         # Apply labels
         for k, v in labels.items():
@@ -209,12 +296,26 @@ class DockerRuntime(Runtime):
                     f"Failed to inspect container '{container_id}': {result.stderr.strip()}"
                 )
             data = json.loads(result.stdout)
+            # Priority 6: Real validation of runtime attributes from Docker inspect data
+            host_config = data[0].get("HostConfig", {})
+            if host_config.get("Privileged", False):
+                raise ValidationError(f"Security violation: Container '{container_id}' is running in privileged mode")
+            if host_config.get("NetworkMode") == "host":
+                raise ValidationError(f"Security violation: Container '{container_id}' is using host networking")
+            for bind in host_config.get("Binds") or []:
+                if "docker.sock" in str(bind).lower():
+                    raise ValidationError(f"Security violation: Container '{container_id}' has mounted docker.sock: {bind}")
+            if host_config.get("Devices"):
+                raise ValidationError(f"Security violation: Container '{container_id}' has direct host device access")
+
             state = data[0]["State"]
             return ContainerRuntimeState(
                 running=bool(state["Running"]),
                 status=str(state["Status"]),
                 exit_code=int(state["ExitCode"]),
             )
+        except ValidationError:
+            raise
         except (json.JSONDecodeError, KeyError, IndexError, subprocess.TimeoutExpired, OSError) as exc:
             raise DockerRuntimeError(f"Malformed inspect for '{container_id}': {exc}") from exc
 

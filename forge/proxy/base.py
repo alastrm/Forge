@@ -17,5 +17,15 @@ class Proxy(abc.ABC):
         """Generate proxy routing labels for container."""
 
     @abc.abstractmethod
+    def promote_service(
+        self,
+        app_name: str,
+        domain: str,
+        container_name: str,
+        port: int,
+    ) -> None:
+        """Promote a candidate container to receive active production traffic."""
+
+    @abc.abstractmethod
     def remove_service(self, app_name: str) -> None:
         """Remove proxy routing for an application."""

@@ -1,3 +1,4 @@
+import os
 import sqlite3
 from pathlib import Path
 
@@ -68,6 +69,10 @@ CREATE TABLE IF NOT EXISTS environment_variables (
 
 CREATE INDEX IF NOT EXISTS idx_deployments_app_id ON deployments(app_id);
 CREATE INDEX IF NOT EXISTS idx_deployments_status ON deployments(status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_one_in_progress_per_app ON deployments(app_id)
+    WHERE status IN ('PENDING', 'BUILDING', 'STARTING', 'HEALTH_CHECKING');
+CREATE UNIQUE INDEX IF NOT EXISTS idx_one_active_per_app ON deployments(app_id)
+    WHERE status = 'ACTIVE';
 CREATE INDEX IF NOT EXISTS idx_events_app_id ON events(app_id);
 CREATE INDEX IF NOT EXISTS idx_events_created_at ON events(created_at);
 CREATE INDEX IF NOT EXISTS idx_containers_deployment_id ON containers(deployment_id);
@@ -78,9 +83,22 @@ class Database:
     def __init__(self, db_path: str | Path = ":memory:") -> None:
         self.db_path = str(db_path)
         if self.db_path != ":memory:":
-            Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+            db_file = Path(self.db_path).resolve()
+            db_file.parent.mkdir(parents=True, exist_ok=True)
+            # SEC-07: Restrict database directory permissions on POSIX
+            try:
+                os.chmod(db_file.parent, 0o700)
+            except OSError:
+                pass
         self._connection: sqlite3.Connection | None = None
         self._init_db()
+        if self.db_path != ":memory:":
+            db_file = Path(self.db_path).resolve()
+            # SEC-07: Restrict database file permissions (owner read/write only)
+            try:
+                os.chmod(db_file, 0o600)
+            except OSError:
+                pass
 
     def get_connection(self) -> sqlite3.Connection:
         if self.db_path == ":memory:":
