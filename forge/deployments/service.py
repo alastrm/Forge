@@ -420,7 +420,7 @@ class DeploymentService:
         try:
             current_active = self.dep_repo.get_active_deployment(app.id)
 
-            if target_deployment_id:
+            if target_deployment_id and (current_active is None or target_deployment_id != current_active.id):
                 target_dep = self.dep_repo.get_by_id(target_deployment_id)
                 if target_dep is None or target_dep.app_id != app.id:
                     raise EntityNotFoundError(f"Target deployment '{target_deployment_id}' not found")

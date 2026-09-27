@@ -188,12 +188,17 @@ class Reconciler:
             if dep.active_container_id:
                 expected_containers.add(dep.active_container_id)
 
-        # 2. In-flight jobs
+        # 2. In-flight jobs (queue or synchronous rollback)
+        in_flight_ids = set()
         if self.job_queue is not None:
-            for dep_id in self.job_queue.get_in_flight_deployment_ids():
-                d = self.dep_repo.get_by_id(dep_id)
-                if d and d.candidate_container_id:
-                    expected_containers.add(d.candidate_container_id)
+            in_flight_ids.update(self.job_queue.get_in_flight_deployment_ids())
+        if self.deployment_service is not None:
+            in_flight_ids.update(self.deployment_service.get_in_flight_deployment_ids())
+
+        for dep_id in in_flight_ids:
+            d = self.dep_repo.get_by_id(dep_id)
+            if d and d.candidate_container_id:
+                expected_containers.add(d.candidate_container_id)
 
         # Remove any container managed by Forge that is not expected
         apps = self.app_repo.list_all()

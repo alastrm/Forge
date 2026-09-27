@@ -14,7 +14,7 @@ from forge.core.errors import (
     PayloadTooLargeError,
     ValidationError,
 )
-from forge.core.models import DeploymentStatus
+from forge.core.models import Application, DeploymentStatus
 from forge.core.scrubber import scrub_text
 from forge.deployments.service import DeploymentService
 from forge.proxy.base import Proxy
@@ -93,6 +93,12 @@ class ForgeRequestHandler(BaseHTTPRequestHandler):
             return False
         return True
 
+    def _resolve_app(self, identifier: str) -> Application | None:
+        app = self.server.app_repo.get_by_id(identifier)
+        if app is None:
+            app = self.server.app_repo.get_by_name(identifier)
+        return app
+
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
@@ -127,10 +133,10 @@ class ForgeRequestHandler(BaseHTTPRequestHandler):
             # GET /api/v1/applications/{id}
             match_app = re.match(r"^/api/v1/applications/([^/]+)$", path)
             if match_app:
-                app_id = match_app.group(1)
-                app = self.server.app_repo.get_by_id(app_id)
+                app_identifier = match_app.group(1)
+                app = self._resolve_app(app_identifier)
                 if not app:
-                    raise EntityNotFoundError(f"Application '{app_id}' not found")
+                    raise EntityNotFoundError(f"Application '{app_identifier}' not found")
 
                 active_dep = self.server.dep_repo.get_active_deployment(app.id)
                 # SEC-07: Masked env vars, zero plaintext leak
@@ -160,12 +166,12 @@ class ForgeRequestHandler(BaseHTTPRequestHandler):
             # GET /api/v1/applications/{id}/deployments
             match_app_deps = re.match(r"^/api/v1/applications/([^/]+)/deployments$", path)
             if match_app_deps:
-                app_id = match_app_deps.group(1)
-                app = self.server.app_repo.get_by_id(app_id)
+                app_identifier = match_app_deps.group(1)
+                app = self._resolve_app(app_identifier)
                 if not app:
-                    raise EntityNotFoundError(f"Application '{app_id}' not found")
+                    raise EntityNotFoundError(f"Application '{app_identifier}' not found")
                 limit = int(query.get("limit", [50])[0])
-                deps = self.server.dep_repo.list_by_app(app_id, limit=limit)
+                deps = self.server.dep_repo.list_by_app(app.id, limit=limit)
                 res = [
                     {
                         "id": d.id,
@@ -209,12 +215,12 @@ class ForgeRequestHandler(BaseHTTPRequestHandler):
             # GET /api/v1/applications/{id}/events
             match_events = re.match(r"^/api/v1/applications/([^/]+)/events$", path)
             if match_events:
-                app_id = match_events.group(1)
-                app = self.server.app_repo.get_by_id(app_id)
+                app_identifier = match_events.group(1)
+                app = self._resolve_app(app_identifier)
                 if not app:
-                    raise EntityNotFoundError(f"Application '{app_id}' not found")
+                    raise EntityNotFoundError(f"Application '{app_identifier}' not found")
                 limit = int(query.get("limit", [50])[0])
-                events = self.server.event_repo.list_by_app(app_id, limit=limit)
+                events = self.server.event_repo.list_by_app(app.id, limit=limit)
                 res = [
                     {
                         "id": e.id,
@@ -232,23 +238,23 @@ class ForgeRequestHandler(BaseHTTPRequestHandler):
             # GET /api/v1/applications/{id}/logs
             match_logs = re.match(r"^/api/v1/applications/([^/]+)/logs$", path)
             if match_logs:
-                app_id = match_logs.group(1)
-                app = self.server.app_repo.get_by_id(app_id)
+                app_identifier = match_logs.group(1)
+                app = self._resolve_app(app_identifier)
                 if not app:
-                    raise EntityNotFoundError(f"Application '{app_id}' not found")
+                    raise EntityNotFoundError(f"Application '{app_identifier}' not found")
                 tail = int(query.get("tail", [100])[0])
-                active_dep = self.server.dep_repo.get_active_deployment(app_id)
+                active_dep = self.server.dep_repo.get_active_deployment(app.id)
                 if not active_dep or not active_dep.active_container_id:
-                    self._send_json(200, {"app_id": app_id, "logs": ""})
+                    self._send_json(200, {"app_id": app.id, "logs": ""})
                     return
                 raw_logs = self.server.runtime.logs(active_dep.active_container_id, tail=tail)
                 # Priority 7: Zero-leak logs - scrub all configured secrets and sensitive patterns
-                app_env = self.server.env_repo.get_vars(app_id)
+                app_env = self.server.env_repo.get_vars(app.id)
                 scrubbed_logs = scrub_text(raw_logs, secrets=list(app_env.values()))
                 self._send_json(
                     200,
                     {
-                        "app_id": app_id,
+                        "app_id": app.id,
                         "container_id": active_dep.active_container_id,
                         "logs": scrubbed_logs,
                     },
@@ -300,7 +306,11 @@ class ForgeRequestHandler(BaseHTTPRequestHandler):
             # POST /api/v1/applications/{id}/deployments
             match_app_deploy = re.match(r"^/api/v1/applications/([^/]+)/deployments$", path)
             if match_app_deploy:
-                app_id = match_app_deploy.group(1)
+                app_identifier = match_app_deploy.group(1)
+                app = self._resolve_app(app_identifier)
+                if not app:
+                    raise EntityNotFoundError(f"Application '{app_identifier}' not found")
+                app_id = app.id
                 context_path_raw = body.get("context_path")
                 if not context_path_raw:
                     raise ValidationError("Field 'context_path' is required")
@@ -342,6 +352,27 @@ class ForgeRequestHandler(BaseHTTPRequestHandler):
                 )
                 return
 
+            # POST /api/v1/applications/{id}/rollback
+            match_app_rollback = re.match(r"^/api/v1/applications/([^/]+)/rollback$", path)
+            if match_app_rollback:
+                app_identifier = match_app_rollback.group(1)
+                app = self._resolve_app(app_identifier)
+                if not app:
+                    raise EntityNotFoundError(f"Application '{app_identifier}' not found")
+
+                rb_dep = self.server.deployment_service.rollback(app_id=app.id)
+                self._send_json(
+                    200,
+                    {
+                        "deployment_id": rb_dep.id,
+                        "app_id": rb_dep.app_id,
+                        "status": rb_dep.status.value,
+                        "active_container_id": rb_dep.active_container_id,
+                        "message": "Rollback successful",
+                    },
+                )
+                return
+
             # POST /api/v1/deployments/{id}/rollback
             match_rollback = re.match(r"^/api/v1/deployments/([^/]+)/rollback$", path)
             if match_rollback:
@@ -350,9 +381,10 @@ class ForgeRequestHandler(BaseHTTPRequestHandler):
                 if not target_dep:
                     raise EntityNotFoundError(f"Deployment '{dep_id}' not found")
 
+                target_id = target_dep.id if target_dep.status != DeploymentStatus.ACTIVE else None
                 rb_dep = self.server.deployment_service.rollback(
                     app_id=target_dep.app_id,
-                    target_deployment_id=target_dep.id,
+                    target_deployment_id=target_id,
                 )
                 self._send_json(
                     200,
@@ -392,11 +424,14 @@ class ForgeRequestHandler(BaseHTTPRequestHandler):
         try:
             match_app = re.match(r"^/api/v1/applications/([^/]+)$", path)
             if match_app:
-                app_id = match_app.group(1)
-                deleted = self.server.app_repo.delete(app_id)
+                app_identifier = match_app.group(1)
+                app = self._resolve_app(app_identifier)
+                if not app:
+                    raise EntityNotFoundError(f"Application '{app_identifier}' not found")
+                deleted = self.server.app_repo.delete(app.id)
                 if not deleted:
-                    raise EntityNotFoundError(f"Application '{app_id}' not found")
-                self._send_json(200, {"deleted": True, "id": app_id})
+                    raise EntityNotFoundError(f"Application '{app_identifier}' not found")
+                self._send_json(200, {"deleted": True, "id": app.id})
                 return
 
             self._send_error(404, "not_found", f"Endpoint '{path}' not found")

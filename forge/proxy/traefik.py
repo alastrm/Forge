@@ -49,7 +49,11 @@ class TraefikProxy(Proxy):
                 if data and data[0]["State"]["Running"]:
                     return
                 # Stale stopped proxy container, remove it
-                subprocess.run(["docker", "rm", "-f", self.proxy_name], capture_output=True, timeout=10.0)
+        except Exception:
+            pass
+
+        try:
+            subprocess.run(["docker", "network", "create", self.network], capture_output=True, timeout=10.0)
         except Exception:
             pass
 
@@ -147,6 +151,11 @@ class TraefikProxy(Proxy):
         try:
             subprocess.run(
                 ["docker", "exec", self.proxy_name, "touch", f"/etc/traefik/dynamic/{app_name}.yaml"],
+                capture_output=True,
+                timeout=5.0,
+            )
+            subprocess.run(
+                ["docker", "exec", self.proxy_name, "touch", "/etc/traefik/dynamic"],
                 capture_output=True,
                 timeout=5.0,
             )
