@@ -124,6 +124,13 @@ class FakeRuntime(Runtime):
             return str(self.containers[container_id].get("logs", ""))
         return ""
 
+    def logs_stream(self, container_id: str, tail: int = 100) -> Iterator[str]:
+        raw = self.logs(container_id, tail=tail)
+        if not raw:
+            return
+        for line in raw.splitlines(keepends=True):
+            yield line
+
     def list_containers(self, label_filters: dict[str, str] | None = None) -> list[str]:
         result: list[str] = []
         for name, data in self.containers.items():

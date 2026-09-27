@@ -7,6 +7,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +45,28 @@ class ForgeApiClient:
         except urllib.error.URLError as err:
             print(f"Error: Could not connect to Forge server at {self.base_url}: {err.reason}", file=sys.stderr)
             print("Tip: Make sure 'forge server' is running.", file=sys.stderr)
+            sys.exit(1)
+
+    def stream_logs(self, app_identifier: str, tail: int = 100) -> Iterator[str]:
+        url = f"{self.base_url}/api/v1/applications/{app_identifier}/logs?tail={tail}&follow=true"
+        req = urllib.request.Request(url, method="GET")
+        if self.api_token:
+            req.add_header("Authorization", f"Bearer {self.api_token}")
+        try:
+            with urllib.request.urlopen(req, timeout=None) as resp:
+                for line in resp:
+                    yield line.decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as err:
+            body = err.read().decode("utf-8")
+            try:
+                err_json = json.loads(body)
+                msg = err_json.get("error", {}).get("message", body)
+            except Exception:
+                msg = body
+            print(f"Error ({err.code}): {msg}", file=sys.stderr)
+            sys.exit(1)
+        except urllib.error.URLError as err:
+            print(f"Error: Could not connect to Forge server at {self.base_url}: {err.reason}", file=sys.stderr)
             sys.exit(1)
 
 
@@ -103,6 +126,7 @@ def build_parser() -> argparse.ArgumentParser:
     logs_parser = subparsers.add_parser("logs", help="View logs for an application's active container")
     logs_parser.add_argument("app_name", help="Application name or ID")
     logs_parser.add_argument("--tail", type=int, default=100, help="Number of lines to show (default: 100)")
+    logs_parser.add_argument("-f", "--follow", action="store_true", help="Stream logs in real-time")
 
     # forge rollback
     rollback_parser = subparsers.add_parser("rollback", help="Roll back application to previous deployment")
@@ -304,7 +328,16 @@ def cmd_status(client: ForgeApiClient, app_identifier: str) -> None:
         sys.exit(1)
 
 
-def cmd_logs(client: ForgeApiClient, app_identifier: str, tail: int) -> None:
+def cmd_logs(client: ForgeApiClient, app_identifier: str, tail: int, follow: bool = False) -> None:
+    if follow:
+        try:
+            for line in client.stream_logs(app_identifier, tail=tail):
+                sys.stdout.write(line)
+                sys.stdout.flush()
+        except KeyboardInterrupt:
+            pass
+        return
+
     status, logs_data = client._request("GET", f"/api/v1/applications/{app_identifier}/logs?tail={tail}")
     if status == 200:
         logs = logs_data.get("logs", "")
@@ -368,7 +401,7 @@ def main() -> None:
     elif args.command == "status":
         cmd_status(client, args.app_name)
     elif args.command == "logs":
-        cmd_logs(client, args.app_name, args.tail)
+        cmd_logs(client, args.app_name, args.tail, follow=getattr(args, "follow", False))
     elif args.command == "rollback":
         cmd_rollback(client, args.app_name)
     elif args.command == "deployments":

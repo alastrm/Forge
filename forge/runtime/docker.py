@@ -348,6 +348,38 @@ class DockerRuntime(Runtime):
         except (subprocess.TimeoutExpired, OSError) as exc:
             raise DockerRuntimeError(f"Failed to fetch logs for '{container_id}': {exc}") from exc
 
+    def logs_stream(self, container_id: str, tail: int = 100) -> Iterator[str]:
+        command = ["docker", "logs", "-f", "--tail", str(tail), container_id]
+        proc = None
+        try:
+            proc = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+            if proc.stdout:
+                for line in proc.stdout:
+                    yield line
+        finally:
+            if proc is not None:
+                try:
+                    if proc.poll() is None:
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=1.0)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                            proc.wait(timeout=1.0)
+                except Exception:
+                    pass
+                if proc.stdout:
+                    try:
+                        proc.stdout.close()
+                    except Exception:
+                        pass
+
     def list_containers(self, label_filters: dict[str, str] | None = None) -> list[str]:
         command = ["docker", "ps", "-a", "--format", "{{.Names}}"]
         if label_filters:

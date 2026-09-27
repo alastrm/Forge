@@ -243,14 +243,43 @@ class ForgeRequestHandler(BaseHTTPRequestHandler):
                 if not app:
                     raise EntityNotFoundError(f"Application '{app_identifier}' not found")
                 tail = int(query.get("tail", [100])[0])
+                follow = query.get("follow", ["false"])[0].lower() in ("true", "1", "yes")
                 active_dep = self.server.dep_repo.get_active_deployment(app.id)
                 if not active_dep or not active_dep.active_container_id:
+                    if follow:
+                        self.close_connection = True
+                        self.send_response(200)
+                        self.send_header("Content-Type", "text/plain; charset=utf-8")
+                        self.send_header("Connection", "close")
+                        self.end_headers()
+                        self.wfile.write(b"<no active container to stream logs>\n")
+                        self.wfile.flush()
+                        return
                     self._send_json(200, {"app_id": app.id, "logs": ""})
                     return
+
+                app_env = self.server.env_repo.get_vars(app.id)
+                secrets = list(app_env.values())
+
+                if follow:
+                    self.close_connection = True
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/plain; charset=utf-8")
+                    self.send_header("Cache-Control", "no-cache")
+                    self.send_header("Connection", "close")
+                    self.end_headers()
+                    try:
+                        for line in self.server.runtime.logs_stream(active_dep.active_container_id, tail=tail):
+                            scrubbed_line = scrub_text(line, secrets=secrets)
+                            self.wfile.write(scrubbed_line.encode("utf-8"))
+                            self.wfile.flush()
+                    except (BrokenPipeError, ConnectionResetError):
+                        pass
+                    return
+
                 raw_logs = self.server.runtime.logs(active_dep.active_container_id, tail=tail)
                 # Priority 7: Zero-leak logs - scrub all configured secrets and sensitive patterns
-                app_env = self.server.env_repo.get_vars(app.id)
-                scrubbed_logs = scrub_text(raw_logs, secrets=list(app_env.values()))
+                scrubbed_logs = scrub_text(raw_logs, secrets=secrets)
                 self._send_json(
                     200,
                     {

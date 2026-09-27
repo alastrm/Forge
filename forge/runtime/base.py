@@ -67,5 +67,9 @@ class Runtime(abc.ABC):
         """Fetch container logs."""
 
     @abc.abstractmethod
+    def logs_stream(self, container_id: str, tail: int = 100) -> Iterator[str]:
+        """Stream container logs line by line."""
+
+    @abc.abstractmethod
     def list_containers(self, label_filters: dict[str, str] | None = None) -> list[str]:
         """List container names, optionally filtered by labels."""
