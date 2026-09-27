@@ -5,7 +5,7 @@
 [![Python Version](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen.svg)]()
-[![Tests](https://img.shields.io/badge/tests-118%20passing-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-120%20passing-brightgreen.svg)]()
 
 Forge is a minimalist single-node deployment control plane and PaaS. It provides a persistent state machine, asynchronous background deployments, continuous state reconciliation, zero-rebuild rollbacks, and an automated Traefik reverse proxy.
 
@@ -79,7 +79,7 @@ Forge is a minimalist single-node deployment control plane and PaaS. It provides
 5. **Traefik Ingress**: Routes incoming HTTP traffic based on labels.
 
 ### Hardening Controls
-- **Zero-Leak Secret Handling**: Secrets are never passed via CLI arguments (`-e KEY=VAL`, which leaks in `ps aux`). Environment files are written with `0600` permissions and immediately deleted after container creation.
+- **Zero-Leak Secret Handling**: Secrets are never passed via CLI arguments (`-e KEY=VAL`, which leaks in `ps aux` and shell history). Direct `KEY=VALUE` arguments in `forge env set` are strictly forbidden. Secrets must be entered interactively via secure prompt (`getpass`), loaded from a protected file (`--file`), or synced directly during `forge deploy`. Environment files on the host are written with `0600` permissions and immediately deleted after container creation.
 - **Masked API Responses**: `GET /api/v1/applications/{id}` returns metadata and `is_set: true` indicators, never plaintext secrets. Events never store secret values.
 - **Timing-Safe Authentication**: API Bearer tokens are validated using constant-time comparison (`hmac.compare_digest`).
 - **Localhost Binding**: Forge Server strictly binds to `127.0.0.1`.
@@ -148,8 +148,10 @@ forge deploy ./path/to/app   # Deploy specific path
 forge app list
 forge status my-api
 
-# Manage environment variables & secrets
-forge env set my-api KEY=VALUE API_SECRET=supersecret
+# Manage environment variables & secrets (KEY=VALUE in CLI is strictly forbidden)
+forge env set my-api API_KEY             # Interactive prompt without echo
+forge env set my-api --file .env.secrets # Read from secure file
+cat secrets.env | forge env set my-api   # Pipe from stdin
 
 # Inspect deployments and logs
 forge deployments my-api

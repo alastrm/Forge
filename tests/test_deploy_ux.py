@@ -196,17 +196,51 @@ class TestDeployUX(unittest.TestCase):
             self.assertIn("--- Container output ---", failed_dep.error_message)
             self.assertIn("NameError: name 'bad' is not defined", failed_dep.error_message)
 
-    def test_env_set_and_command(self) -> None:
+    def test_env_set_forbids_cli_key_value(self) -> None:
+        from forge.cli import cmd_env_set
+
+        client = MagicMock()
+        # Attempting KEY=VALUE must be strictly rejected
+        with self.assertRaises(SystemExit) as ctx:
+            cmd_env_set(client, "myapp", ["SECRET_KEY=leaked_in_ps_aux"])
+        self.assertEqual(ctx.exception.code, 1)
+        client._request.assert_not_called()
+
+    def test_env_set_interactive_prompt(self) -> None:
+        from unittest.mock import patch
+        from forge.cli import cmd_env_set
+
+        client = MagicMock()
+        client._request.return_value = (200, {"success": True, "count": 1})
+
+        with patch("getpass.getpass", return_value="supersecret"):
+            cmd_env_set(client, "myapp", ["DATABASE_PASSWORD"])
+
+        client._request.assert_called_once_with(
+            "POST",
+            "/api/v1/applications/myapp/env",
+            data={"env_vars": {"DATABASE_PASSWORD": "supersecret"}},
+        )
+
+    def test_env_set_file(self) -> None:
         from forge.cli import cmd_env_set
 
         client = MagicMock()
         client._request.return_value = (200, {"success": True, "count": 2})
-        cmd_env_set(client, "myapp", ["DATABASE_URL=postgres://localhost/db", "SECRET_KEY=supersecret"])
-        client._request.assert_called_once_with(
-            "POST",
-            "/api/v1/applications/myapp/env",
-            data={"env_vars": {"DATABASE_URL": "postgres://localhost/db", "SECRET_KEY": "supersecret"}},
-        )
+
+        with tempfile.NamedTemporaryFile("w", delete=False, suffix=".env") as f:
+            f.write("KEY1=VAL1\nKEY2=VAL2\n")
+            f_path = Path(f.name)
+
+        try:
+            cmd_env_set(client, "myapp", keys=[], file_path=f_path)
+            client._request.assert_called_once_with(
+                "POST",
+                "/api/v1/applications/myapp/env",
+                data={"env_vars": {"KEY1": "VAL1", "KEY2": "VAL2"}},
+            )
+        finally:
+            f_path.unlink(missing_ok=True)
 
     def test_prune_runtime_and_command(self) -> None:
         from forge.cli import cmd_prune
@@ -224,12 +258,18 @@ class TestDeployUX(unittest.TestCase):
 
     def test_cli_parser_env_and_prune(self) -> None:
         parser = build_parser()
-        # env set
-        args = parser.parse_args(["env", "set", "myapp", "FOO=BAR", "BAZ=QUX"])
+        # env set interactive keys
+        args = parser.parse_args(["env", "set", "myapp", "FOO", "BAR"])
         self.assertEqual(args.command, "env")
         self.assertEqual(args.env_command, "set")
         self.assertEqual(args.app_name, "myapp")
-        self.assertEqual(args.vars, ["FOO=BAR", "BAZ=QUX"])
+        self.assertEqual(args.keys, ["FOO", "BAR"])
+        self.assertIsNone(args.file)
+
+        # env set --file
+        args_file = parser.parse_args(["env", "set", "myapp", "--file", "./secrets.env"])
+        self.assertEqual(args_file.file, Path("./secrets.env"))
+        self.assertEqual(args_file.keys, [])
 
         # prune
         args_prune = parser.parse_args(["prune"])

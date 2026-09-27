@@ -1,4 +1,5 @@
 import argparse
+import getpass
 import json
 import os
 import re
@@ -144,9 +145,10 @@ def build_parser() -> argparse.ArgumentParser:
     # forge env
     env_parser = subparsers.add_parser("env", help="Manage application environment variables")
     env_sub = env_parser.add_subparsers(dest="env_command", help="Environment subcommands")
-    env_set = env_sub.add_parser("set", help="Set environment variable(s) for an application")
+    env_set = env_sub.add_parser("set", help="Set environment variable(s) for an application securely")
     env_set.add_argument("app_name", help="Application name or ID")
-    env_set.add_argument("vars", nargs="+", help="KEY=VALUE pairs to set")
+    env_set.add_argument("keys", nargs="*", default=[], help="Variable name(s) to set interactively via secure prompt")
+    env_set.add_argument("--file", "-f", type=Path, default=None, help="Path to env file (or '-' for stdin)")
 
     # forge prune
     subparsers.add_parser("prune", help="Prune dangling container images to reclaim disk space")
@@ -474,22 +476,88 @@ def cmd_rollback(client: ForgeApiClient, app_identifier: str) -> None:
         sys.exit(1)
 
 
-def cmd_env_set(client: ForgeApiClient, app_identifier: str, key_val_pairs: list[str]) -> None:
+def cmd_env_set(
+    client: ForgeApiClient,
+    app_identifier: str,
+    keys: list[str],
+    file_path: Path | None = None,
+) -> None:
     env_vars: dict[str, str] = {}
-    for pair in key_val_pairs:
-        if "=" not in pair:
-            print(f"Error: Invalid variable format '{pair}'. Expected KEY=VALUE", file=sys.stderr)
+
+    # 1. Strictly forbid KEY=VALUE in CLI arguments (security risk: shell history, ps aux)
+    for k in keys:
+        if "=" in k:
+            var_name = k.split("=")[0]
+            print(
+                f"Error: Passing secrets directly via command-line arguments ('{k}') is forbidden.\n"
+                f"Secrets in CLI arguments leak in shell history and system process tables.\n"
+                f"To set securely, use:\n"
+                f"  forge env set {app_identifier} {var_name}       (interactive hidden prompt)\n"
+                f"  forge env set {app_identifier} --file .env    (from a secure file)",
+                file=sys.stderr,
+            )
             sys.exit(1)
-        k, v = pair.split("=", 1)
-        k = k.strip()
-        if not k:
-            print(f"Error: Empty variable name in '{pair}'", file=sys.stderr)
+
+    # 2. Ingest from file or stdin
+    if file_path is not None:
+        if str(file_path) == "-":
+            for line in sys.stdin:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                k = k.strip()
+                v = v.strip().strip("'\"")
+                if k:
+                    env_vars[k] = v
+        else:
+            resolved = file_path.resolve()
+            if not resolved.is_file():
+                print(f"Error: Environment file not found: '{resolved}'", file=sys.stderr)
+                sys.exit(1)
+            env_vars.update(parse_env_file(resolved))
+
+    # 3. Interactive prompt for any keys specified
+    if keys:
+        for k in keys:
+            k = k.strip()
+            if not k:
+                continue
+            try:
+                val = getpass.getpass(f"Enter secret value for '{k}': ")
+            except (KeyboardInterrupt, EOFError):
+                print("\nAborted.", file=sys.stderr)
+                sys.exit(1)
+            env_vars[k] = val
+
+    # 4. If neither keys nor --file specified, check if piped via stdin
+    if not file_path and not keys:
+        if not sys.stdin.isatty():
+            for line in sys.stdin:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                k = k.strip()
+                v = v.strip().strip("'\"")
+                if k:
+                    env_vars[k] = v
+        else:
+            print(
+                f"Error: Specify variable name(s) to set interactively or pass --file:\n"
+                f"  forge env set {app_identifier} API_KEY\n"
+                f"  forge env set {app_identifier} --file .env",
+                file=sys.stderr,
+            )
             sys.exit(1)
-        env_vars[k] = v
+
+    if not env_vars:
+        print("No environment variables provided to set.", file=sys.stderr)
+        sys.exit(1)
 
     status, res = client._request("POST", f"/api/v1/applications/{app_identifier}/env", data={"env_vars": env_vars})
     if status == 200:
-        print(f"Successfully configured {len(env_vars)} environment variables for '{app_identifier}'.")
+        print(f"Successfully configured {len(env_vars)} environment variable(s) for '{app_identifier}'.")
     else:
         err = res.get("error", {}).get("message", res)
         print(f"Failed to set environment variables: {err}", file=sys.stderr)
@@ -542,7 +610,7 @@ def main() -> None:
         cmd_rollback(client, args.app_name)
     elif args.command == "env":
         if getattr(args, "env_command", None) == "set":
-            cmd_env_set(client, args.app_name, args.vars)
+            cmd_env_set(client, args.app_name, getattr(args, "keys", []), file_path=getattr(args, "file", None))
         else:
             parser.parse_args(["env", "--help"])
     elif args.command == "prune":
