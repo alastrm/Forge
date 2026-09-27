@@ -73,3 +73,8 @@ class Runtime(abc.ABC):
     @abc.abstractmethod
     def list_containers(self, label_filters: dict[str, str] | None = None) -> list[str]:
         """List container names, optionally filtered by labels."""
+
+    @abc.abstractmethod
+    def prune_images(self) -> str:
+        """Prune dangling or unused container images, returning summary output."""
+

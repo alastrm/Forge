@@ -180,6 +180,37 @@ class TestForgeApi(unittest.TestCase):
         self.assertEqual(rb_resp["status"], DeploymentStatus.ACTIVE.value)
         self.assertEqual(rb_resp["message"], "Rollback successful")
 
+    def test_set_env_endpoint(self) -> None:
+        _, app = self._request(
+            "POST",
+            "/api/v1/applications",
+            data={"name": "env-app", "domain": "env.localhost", "container_port": 8000},
+        )
+        app_id = app["id"]
+
+        status, resp = self._request(
+            "POST",
+            f"/api/v1/applications/{app_id}/env",
+            data={"env_vars": {"DB_HOST": "localhost", "API_KEY": "secret123"}},
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(resp["success"])
+        self.assertEqual(resp["count"], 2)
+
+        # GET app returns masked vars
+        status, app_data = self._request("GET", f"/api/v1/applications/{app_id}")
+        self.assertEqual(status, 200)
+        keys = [item["key"] for item in app_data["env_vars"]]
+        self.assertIn("DB_HOST", keys)
+        self.assertIn("API_KEY", keys)
+
+    def test_system_prune_endpoint(self) -> None:
+        status, resp = self._request("POST", "/api/v1/system/prune")
+        self.assertEqual(status, 200)
+        self.assertTrue(resp["success"])
+        self.assertIn("Total reclaimed images", resp["output"])
+
 
 if __name__ == "__main__":
     unittest.main()
+

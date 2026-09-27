@@ -397,3 +397,18 @@ class DockerRuntime(Runtime):
             return [line.strip() for line in result.stdout.splitlines() if line.strip()]
         except (subprocess.TimeoutExpired, OSError) as exc:
             raise DockerRuntimeError(f"Failed to list containers: {exc}") from exc
+
+    def prune_images(self) -> str:
+        command = ["docker", "image", "prune", "-f"]
+        try:
+            result = subprocess.run(
+                command,
+                text=True,
+                capture_output=True,
+                timeout=self.timeout,
+            )
+            if result.returncode != 0:
+                raise DockerRuntimeError(f"Failed to prune images: {result.stderr.strip()}")
+            return result.stdout.strip()
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            raise DockerRuntimeError(f"Failed to prune images: {exc}") from exc

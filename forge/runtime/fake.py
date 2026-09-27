@@ -141,3 +141,9 @@ class FakeRuntime(Runtime):
             if all(labels.get(k) == v for k, v in label_filters.items()):
                 result.append(name)
         return result
+
+    def prune_images(self) -> str:
+        reclaimed = len(self.built_images)
+        self.built_images.clear()
+        return f"Total reclaimed images: {reclaimed}"
+

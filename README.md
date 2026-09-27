@@ -5,7 +5,7 @@
 [![Python Version](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen.svg)]()
-[![Tests](https://img.shields.io/badge/tests-105%20passing-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-118%20passing-brightgreen.svg)]()
 
 Forge is a minimalist single-node deployment control plane and PaaS. It provides a persistent state machine, asynchronous background deployments, continuous state reconciliation, zero-rebuild rollbacks, and an automated Traefik reverse proxy.
 
@@ -109,10 +109,21 @@ forge server --port 8000
 ```
 
 ### 2. Deploy an Application
-In another terminal, deploy an application containing a `Dockerfile`:
+Deploy from inside your project directory (zero arguments) or pass a path:
 ```bash
-forge deploy ./test-app
+cd ./test-app
+forge deploy
+
+# Or deploy from anywhere with overrides:
+forge deploy ./test-app --app my-custom-app --port 8080 --env-file .env
 ```
+
+Forge automatically:
+- Resolves app name: `--app` ➔ `forge.json["app_name"]` ➔ normalized directory name.
+- Sets local routing domain: `--domain` ➔ `forge.json["domain"]` ➔ `{app_name}.localhost`.
+- Resolves container port: `--port` ➔ `forge.json["container_port"]` ➔ `EXPOSE` from `Dockerfile` ➔ `8000`.
+- Injects environment variables: automatically syncs `.env` (or `--env-file`) with zero-leak secret scrubbing.
+- Reports live progress, and prints container diagnostic output automatically if a build or startup fails.
 
 The CLI submits the deployment asynchronously, streams status updates, and reports completion:
 ```text
@@ -131,18 +142,25 @@ Your service is now available through Traefik at `http://test-app.localhost`.
 
 ### 3. CLI Commands
 ```bash
-# Manage applications
-forge app create my-api --domain my-api.localhost --port 8000
+# Manage applications & deployment
+forge deploy                 # Deploy current directory
+forge deploy ./path/to/app   # Deploy specific path
 forge app list
 forge status my-api
+
+# Manage environment variables & secrets
+forge env set my-api KEY=VALUE API_SECRET=supersecret
 
 # Inspect deployments and logs
 forge deployments my-api
 forge logs my-api --tail 50
-forge logs my-api -f  # Stream logs live in real-time
+forge logs my-api -f         # Stream logs live in real-time
 
 # Fast rollback to previous active version
 forge rollback my-api
+
+# Clean up dangling images to reclaim disk space
+forge prune
 ```
 
 ---

@@ -17,6 +17,7 @@ from forge.core.models import (
     EventKind,
     validate_health_check_path,
 )
+from forge.core.scrubber import scrub_text
 from forge.proxy.base import Proxy
 from forge.runtime.base import Runtime
 from forge.storage.db import Database
@@ -269,6 +270,9 @@ class DeploymentService:
             logs = self.runtime.logs(candidate_name)
             self.runtime.remove_container(candidate_name, force=True)
             err_msg = f"Container '{candidate_name}' exited with code {state.exit_code}"
+            scrubbed_logs = scrub_text(logs, secrets=list(env_vars.values()))
+            if scrubbed_logs.strip():
+                err_msg += f"\n--- Container output ---\n{scrubbed_logs.strip()}\n------------------------"
             self.dep_repo.update_status(dep.id, DeploymentStatus.FAILED, error_message=err_msg)
             self.event_repo.record(
                 app_id=app.id,
@@ -300,6 +304,9 @@ class DeploymentService:
             logs = self.runtime.logs(candidate_name)
             self.runtime.remove_container(candidate_name, force=True)
             err_msg = f"Health check failed on port {app.container_port}{health_check_path}"
+            scrubbed_logs = scrub_text(logs, secrets=list(env_vars.values()))
+            if scrubbed_logs.strip():
+                err_msg += f"\n--- Container output ---\n{scrubbed_logs.strip()}\n------------------------"
             self.dep_repo.update_status(dep.id, DeploymentStatus.FAILED, error_message=err_msg)
             self.event_repo.record(
                 app_id=app.id,

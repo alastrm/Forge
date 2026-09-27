@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import re
 import signal
 import sys
 import threading
@@ -11,7 +12,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
-from forge.config import load_project_config
+from forge.config import load_project_config, parse_env_file
 
 
 class ForgeApiClient:
@@ -110,9 +111,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     # forge deploy
     deploy_parser = subparsers.add_parser("deploy", help="Deploy an application directory")
-    deploy_parser.add_argument("project_path", type=Path, help="Path to directory containing Dockerfile")
+    deploy_parser.add_argument(
+        "project_path",
+        nargs="?",
+        default=Path("."),
+        type=Path,
+        help="Path to directory containing Dockerfile (default: current directory)",
+    )
+    deploy_parser.add_argument("--app", default="", help="Application name override")
     deploy_parser.add_argument("--domain", default="", help="Domain name for routing")
     deploy_parser.add_argument("--port", type=int, default=None, help="Container port")
+    deploy_parser.add_argument("--env-file", type=Path, default=None, help="Path to custom .env file")
 
     # forge deployments
     deps_parser = subparsers.add_parser("deployments", help="List deployments for an application")
@@ -131,6 +140,16 @@ def build_parser() -> argparse.ArgumentParser:
     # forge rollback
     rollback_parser = subparsers.add_parser("rollback", help="Roll back application to previous deployment")
     rollback_parser.add_argument("app_name", help="Application name or ID")
+
+    # forge env
+    env_parser = subparsers.add_parser("env", help="Manage application environment variables")
+    env_sub = env_parser.add_subparsers(dest="env_command", help="Environment subcommands")
+    env_set = env_sub.add_parser("set", help="Set environment variable(s) for an application")
+    env_set.add_argument("app_name", help="Application name or ID")
+    env_set.add_argument("vars", nargs="+", help="KEY=VALUE pairs to set")
+
+    # forge prune
+    subparsers.add_parser("prune", help="Prune dangling container images to reclaim disk space")
 
     return parser
 
@@ -219,13 +238,66 @@ def cmd_app_list(client: ForgeApiClient) -> None:
         sys.exit(1)
 
 
-def _find_or_create_app(client: ForgeApiClient, project_path: Path, domain: str, port: int | None) -> str:
+def _normalize_app_name(name: str) -> str:
+    s = re.sub(r"[^a-zA-Z0-9-]", "-", name).lower()
+    s = re.sub(r"-+", "-", s).strip("-")
+    return s[:63] or "app"
+
+
+def _detect_dockerfile_port(project_path: Path) -> int | None:
+    for filename in ("Dockerfile", "dockerfile"):
+        df = project_path / filename
+        if df.is_file():
+            try:
+                for line in df.read_text(encoding="utf-8", errors="replace").splitlines():
+                    match = re.match(r"^\s*EXPOSE\s+(\d+)", line, re.IGNORECASE)
+                    if match:
+                        p = int(match.group(1))
+                        if 1 <= p <= 65535:
+                            return p
+            except Exception:
+                pass
+            break
+    return None
+
+
+def _find_or_create_app(
+    client: ForgeApiClient,
+    project_path: Path,
+    domain: str,
+    port: int | None,
+    app_override: str = "",
+) -> str:
     manifest, _ = load_project_config(project_path)
-    app_name = str(manifest.get("app_name", "")).strip() or project_path.resolve().name
-    if not domain:
-        domain = str(manifest.get("domain", "")).strip() or f"{app_name}.localhost"
-    if port is None:
-        port = int(manifest.get("container_port", 8000))
+
+    # 1. App Name: --app -> forge.json["app_name"] -> normalized directory name
+    if app_override and app_override.strip():
+        app_name = app_override.strip()
+    elif manifest.get("app_name"):
+        app_name = str(manifest["app_name"]).strip()
+    else:
+        app_name = _normalize_app_name(project_path.resolve().name)
+
+    # 2. Domain: --domain -> forge.json["domain"] -> {app_name}.localhost
+    if domain and domain.strip():
+        domain_name = domain.strip()
+    elif manifest.get("domain"):
+        domain_name = str(manifest["domain"]).strip()
+    else:
+        domain_name = f"{_normalize_app_name(app_name)}.localhost"
+
+    # 3. Port: --port -> forge.json["container_port"] -> EXPOSE in Dockerfile -> 8000
+    if port is not None:
+        port_num = port
+    elif manifest.get("container_port") is not None:
+        try:
+            port_num = int(manifest["container_port"])
+        except (ValueError, TypeError):
+            exposed = _detect_dockerfile_port(project_path)
+            port_num = exposed if exposed is not None else 8000
+    else:
+        exposed = _detect_dockerfile_port(project_path)
+        port_num = exposed if exposed is not None else 8000
 
     # Look up if app exists
     status, apps = client._request("GET", "/api/v1/applications")
@@ -238,7 +310,7 @@ def _find_or_create_app(client: ForgeApiClient, project_path: Path, domain: str,
     status, new_app = client._request(
         "POST",
         "/api/v1/applications",
-        data={"name": app_name, "domain": domain, "container_port": port},
+        data={"name": app_name, "domain": domain_name, "container_port": port_num},
     )
     if status == 201:
         return new_app["id"]
@@ -250,11 +322,38 @@ def _find_or_create_app(client: ForgeApiClient, project_path: Path, domain: str,
 
 def cmd_deploy(client: ForgeApiClient, args: argparse.Namespace) -> None:
     project_path = args.project_path.resolve()
-    if not (project_path / "Dockerfile").is_file():
+    has_dockerfile = (project_path / "Dockerfile").is_file() or (project_path / "dockerfile").is_file()
+    if not has_dockerfile:
         print(f"Error: Dockerfile not found in '{project_path}'", file=sys.stderr)
+        print("Tip: Run this command inside your project directory or pass the path: forge deploy ./path/to/project", file=sys.stderr)
         sys.exit(1)
 
-    app_id = _find_or_create_app(client, project_path, args.domain, args.port)
+    app_id = _find_or_create_app(
+        client,
+        project_path,
+        args.domain,
+        args.port,
+        app_override=getattr(args, "app", ""),
+    )
+
+    # Load and sync environment variables from .env and forge.json
+    env_file = getattr(args, "env_file", None)
+    env_file_path = env_file.resolve() if env_file else (project_path / ".env")
+    env_vars: dict[str, str] = {}
+    if env_file_path.is_file():
+        env_vars.update(parse_env_file(env_file_path))
+
+    manifest, _ = load_project_config(project_path)
+    if isinstance(manifest.get("env"), dict):
+        merged = {str(k): str(v) for k, v in manifest["env"].items()}
+        merged.update(env_vars)
+        env_vars = merged
+
+    if env_vars:
+        st, _ = client._request("POST", f"/api/v1/applications/{app_id}/env", data={"env_vars": env_vars})
+        if st == 200:
+            source_desc = f"'{env_file_path.name}'" if env_file_path.is_file() else "manifest"
+            print(f"Loaded {len(env_vars)} environment variables from {source_desc}")
 
     print(f"Deploying application '{project_path.name}' to Forge control plane...")
     payload = {
@@ -289,12 +388,12 @@ def cmd_deploy(client: ForgeApiClient, args: argparse.Namespace) -> None:
         elif current_status == "FAILED":
             err_msg = dep.get("error_message", "Unknown error")
             print(f"\nDeployment failed: {err_msg}", file=sys.stderr)
-            # Try to fetch logs
-            _, logs_data = client._request("GET", f"/api/v1/applications/{app_id}/logs")
-            if logs_data and logs_data.get("logs"):
-                print("--- Application Logs ---")
-                print(logs_data["logs"])
-                print("------------------------")
+            if "--- Container output ---" not in err_msg:
+                _, logs_data = client._request("GET", f"/api/v1/applications/{app_id}/logs")
+                if logs_data and logs_data.get("logs") and logs_data["logs"].strip():
+                    print("--- Container output ---")
+                    print(logs_data["logs"].strip())
+                    print("------------------------")
             sys.exit(1)
 
         time.sleep(0.5)
@@ -375,6 +474,43 @@ def cmd_rollback(client: ForgeApiClient, app_identifier: str) -> None:
         sys.exit(1)
 
 
+def cmd_env_set(client: ForgeApiClient, app_identifier: str, key_val_pairs: list[str]) -> None:
+    env_vars: dict[str, str] = {}
+    for pair in key_val_pairs:
+        if "=" not in pair:
+            print(f"Error: Invalid variable format '{pair}'. Expected KEY=VALUE", file=sys.stderr)
+            sys.exit(1)
+        k, v = pair.split("=", 1)
+        k = k.strip()
+        if not k:
+            print(f"Error: Empty variable name in '{pair}'", file=sys.stderr)
+            sys.exit(1)
+        env_vars[k] = v
+
+    status, res = client._request("POST", f"/api/v1/applications/{app_identifier}/env", data={"env_vars": env_vars})
+    if status == 200:
+        print(f"Successfully configured {len(env_vars)} environment variables for '{app_identifier}'.")
+    else:
+        err = res.get("error", {}).get("message", res)
+        print(f"Failed to set environment variables: {err}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_prune(client: ForgeApiClient) -> None:
+    print("Pruning unused Docker images...")
+    status, res = client._request("POST", "/api/v1/system/prune")
+    if status == 200:
+        out = res.get("output", "")
+        if out:
+            print(out)
+        else:
+            print("Successfully pruned images.")
+    else:
+        err = res.get("error", {}).get("message", res)
+        print(f"Prune failed: {err}", file=sys.stderr)
+        sys.exit(1)
+
+
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
@@ -404,6 +540,13 @@ def main() -> None:
         cmd_logs(client, args.app_name, args.tail, follow=getattr(args, "follow", False))
     elif args.command == "rollback":
         cmd_rollback(client, args.app_name)
+    elif args.command == "env":
+        if getattr(args, "env_command", None) == "set":
+            cmd_env_set(client, args.app_name, args.vars)
+        else:
+            parser.parse_args(["env", "--help"])
+    elif args.command == "prune":
+        cmd_prune(client)
     elif args.command == "deployments":
         status, deps = client._request("GET", f"/api/v1/applications/{args.app_name}/deployments")
         if status == 200:

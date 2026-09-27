@@ -40,12 +40,15 @@ class ForgeRequestHandler(BaseHTTPRequestHandler):
         pass
 
     def _send_json(self, status_code: int, data: Any) -> None:
-        response_bytes = json.dumps(data, indent=2).encode("utf-8")
-        self.send_response(status_code)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(response_bytes)))
-        self.end_headers()
-        self.wfile.write(response_bytes)
+        try:
+            response_bytes = json.dumps(data, indent=2).encode("utf-8")
+            self.send_response(status_code)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(response_bytes)))
+            self.end_headers()
+            self.wfile.write(response_bytes)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
 
     def _send_error(self, status_code: int, code: str, message: str) -> None:
         self._send_json(
@@ -273,7 +276,7 @@ class ForgeRequestHandler(BaseHTTPRequestHandler):
                             scrubbed_line = scrub_text(line, secrets=secrets)
                             self.wfile.write(scrubbed_line.encode("utf-8"))
                             self.wfile.flush()
-                    except (BrokenPipeError, ConnectionResetError):
+                    except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
                         pass
                     return
 
@@ -425,6 +428,27 @@ class ForgeRequestHandler(BaseHTTPRequestHandler):
                         "message": "Rollback successful",
                     },
                 )
+                return
+
+            # POST /api/v1/applications/{id}/env
+            match_env = re.match(r"^/api/v1/applications/([^/]+)/env$", path)
+            if match_env:
+                app_identifier = match_env.group(1)
+                app = self._resolve_app(app_identifier)
+                if not app:
+                    raise EntityNotFoundError(f"Application '{app_identifier}' not found")
+                env_vars = body.get("env_vars", {})
+                if not isinstance(env_vars, dict):
+                    raise ValidationError("Field 'env_vars' must be a dictionary of key-value pairs")
+                for k, v in env_vars.items():
+                    self.server.env_repo.set_var(app.id, str(k), str(v))
+                self._send_json(200, {"success": True, "count": len(env_vars)})
+                return
+
+            # POST /api/v1/system/prune
+            if path == "/api/v1/system/prune":
+                summary = self.server.runtime.prune_images()
+                self._send_json(200, {"success": True, "output": summary})
                 return
 
             self._send_error(404, "not_found", f"Endpoint '{path}' not found")
