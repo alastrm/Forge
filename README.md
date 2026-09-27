@@ -5,7 +5,7 @@
 [![Python Version](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen.svg)]()
-[![Tests](https://img.shields.io/badge/tests-80%20passing-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-105%20passing-brightgreen.svg)]()
 
 Forge is a minimalist single-node deployment control plane and PaaS. It provides a persistent state machine, asynchronous background deployments, continuous state reconciliation, zero-rebuild rollbacks, and an automated Traefik reverse proxy.
 
@@ -61,6 +61,7 @@ Forge is a minimalist single-node deployment control plane and PaaS. It provides
   - Detects dead or stopped active containers and records state drift events.
   - Removes orphaned containers with cooperative cancellation.
 - **Zero-Rebuild Rollbacks**: Instant rollbacks using pre-recorded revision image tags without recompilation.
+- **Live Log Streaming**: Real-time log streaming via HTTP (`forge logs <app> -f`) with zero-leak secret scrubbing on the fly.
 - **In-Container Health Checks**: Validates health endpoints directly inside container network namespaces via `docker exec`, avoiding exposed host ports.
 - **Automated Traefik Routing**: Manages an isolated bridge network (`forge-net`) and Traefik reverse proxy with dynamic labels.
 
@@ -96,7 +97,7 @@ Forge is a minimalist single-node deployment control plane and PaaS. It provides
 ### Installation
 Clone the repository:
 ```bash
-git clone https://github.com/madishkin/Forge.git
+git clone https://github.com/alastrm/Forge.git
 cd Forge
 pip install -e .
 ```
@@ -138,6 +139,7 @@ forge status my-api
 # Inspect deployments and logs
 forge deployments my-api
 forge logs my-api --tail 50
+forge logs my-api -f  # Stream logs live in real-time
 
 # Fast rollback to previous active version
 forge rollback my-api
@@ -168,7 +170,7 @@ DATABASE_URL=postgres://user:pass@db:5432/app
 
 ## Testing
 
-Forge contains an architectural test suite of 80 tests covering state machine transitions, background queues, reconciler recovery, security validations, and real Docker integration:
+Forge contains an architectural test suite of 105 tests covering state machine transitions, background queues, reconciler recovery, security validations, and real Docker integration:
 
 ```bash
 # Run unit and integration tests
