@@ -1,0 +1,68 @@
+{
+  "timestamp": "2026-09-28T15:20:55.144912+00:00",
+  "config": {
+    "threads": 5,
+    "duration": 3.0,
+    "pause": 0.01,
+    "url": "http://127.0.0.1/",
+    "host": "demo-stream.localhost",
+    "deploy_new_version": null,
+    "deploy_at": 15.0
+  },
+  "metrics": {
+    "total_requests": 769,
+    "successful_requests": 769,
+    "non_200_requests": 0,
+    "error_rate_pct": 0.0,
+    "rps": 255.42,
+    "breakdown": {
+      "200 OK": 769
+    },
+    "error_seconds": [],
+    "initial_version": "v1",
+    "new_version": null,
+    "first_new_version_offset_sec": null,
+    "first_new_version_second": null,
+    "old_after_new_count": 0
+  },
+  "deploy_telemetry": {},
+  "db_events": [],
+  "seconds_breakdown": {
+    "0": {
+      "total": 270,
+      "ok": 270,
+      "errors": 0,
+      "error_details": {},
+      "versions": {
+        "v1": 270
+      },
+      "p50_latency_ms": 3.38,
+      "avg_latency_ms": 3.86,
+      "max_latency_ms": 18.54
+    },
+    "1": {
+      "total": 248,
+      "ok": 248,
+      "errors": 0,
+      "error_details": {},
+      "versions": {
+        "v1": 248
+      },
+      "p50_latency_ms": 3.9,
+      "avg_latency_ms": 4.98,
+      "max_latency_ms": 12.73
+    },
+    "2": {
+      "total": 251,
+      "ok": 251,
+      "errors": 0,
+      "error_details": {},
+      "versions": {
+        "v1": 251
+      },
+      "p50_latency_ms": 3.61,
+      "avg_latency_ms": 4.37,
+      "max_latency_ms": 13.1
+    }
+  }
+}

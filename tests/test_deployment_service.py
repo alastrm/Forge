@@ -181,6 +181,76 @@ class TestDeploymentService(unittest.TestCase):
         with self.assertRaises(ValidationError):
             self.service.rollback(app_id=self.app.id)
 
+    def test_in_flight_protection_during_decommission(self) -> None:
+        # Deploy v1
+        dep1 = self.service.deploy(app_id=self.app.id, context_path=self.project_path)
+        self.assertEqual(dep1.status, DeploymentStatus.ACTIVE)
+
+        in_flight_during_stop = None
+        orig_stop = self.runtime.stop_container
+
+        def intercept_stop(cid: str, timeout: int = 10) -> None:
+            nonlocal in_flight_during_stop
+            in_flight_during_stop = self.service.get_in_flight_deployment_ids()
+            orig_stop(cid, timeout=timeout)
+
+        self.runtime.stop_container = intercept_stop
+
+        # Deploy v2
+        dep2 = self.service.deploy(app_id=self.app.id, context_path=self.project_path)
+        self.assertEqual(dep2.status, DeploymentStatus.ACTIVE)
+
+        # During old container stop, dep1 must have been registered in in-flight
+        self.assertIsNotNone(in_flight_during_stop)
+        self.assertIn(dep1.id, in_flight_during_stop)
+
+        # After deploy finishes, both dep1 and dep2 must be unregistered
+        self.assertEqual(self.service.get_in_flight_deployment_ids(), set())
+
+    def test_drain_delay_execution(self) -> None:
+        import time
+        # Deploy v1
+        dep1 = self.service.deploy(app_id=self.app.id, context_path=self.project_path)
+        self.assertEqual(dep1.status, DeploymentStatus.ACTIVE)
+
+        t_start = time.monotonic()
+        dep2 = self.service.deploy(app_id=self.app.id, context_path=self.project_path, drain_delay=0.1)
+        elapsed = time.monotonic() - t_start
+
+        self.assertEqual(dep2.status, DeploymentStatus.ACTIVE)
+        self.assertGreaterEqual(elapsed, 0.09)
+
+    def test_ingress_convergence_verification(self) -> None:
+        from unittest.mock import MagicMock, patch
+        from forge.proxy.traefik import TraefikProxy
+
+        # Configure service with TraefikProxy mock
+        traefik_proxy = TraefikProxy(host_port=80)
+        self.service.proxy = traefik_proxy
+
+        # 1. Success on first try
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.__enter__.return_value = mock_resp
+
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            res = self.service._verify_ingress_convergence(
+                domain="test.localhost",
+                timeout=1.0,
+                interval=0.01,
+            )
+            self.assertTrue(res)
+
+        # 2. Timeout handled gracefully without exception
+        with patch("urllib.request.urlopen", side_effect=Exception("Connection refused")):
+            res = self.service._verify_ingress_convergence(
+                domain="test.localhost",
+                timeout=0.05,
+                interval=0.01,
+            )
+            self.assertFalse(res)
+
 
 if __name__ == "__main__":
     unittest.main()
+

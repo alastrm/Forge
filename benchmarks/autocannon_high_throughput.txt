@@ -1,0 +1,40 @@
+Forge High-Throughput Autocannon Benchmark
+Total Elapsed Time: 46.70s
+Deploy Triggered at: 15.0s
+Deploy Completed at: 21.05s
+
+--- Deployment Output ---
+Deploying application 'demo-stream' to Forge control plane...
+Deployment enqueued: dep-e4ab793f
+Waiting for deployment to complete...
+Status: PENDING
+Status: BUILDING
+Status: STARTING
+Status: HEALTH_CHECKING
+Status: ACTIVE
+
+Deployment successful! Active container: demo-stream-2a0edd7
+
+--- Autocannon Raw Output ---
+Running 45s test @ http://127.0.0.1/
+100 connections
+
+
+┌─────────┬──────┬──────┬───────┬─────────┬──────────┬───────────┬─────────┐
+│ Stat    │ 2.5% │ 50%  │ 97.5% │ 99%     │ Avg      │ Stdev     │ Max     │
+├─────────┼──────┼──────┼───────┼─────────┼──────────┼───────────┼─────────┤
+│ Latency │ 1 ms │ 2 ms │ 14 ms │ 1023 ms │ 24.24 ms │ 165.21 ms │ 8821 ms │
+└─────────┴──────┴──────┴───────┴─────────┴──────────┴───────────┴─────────┘
+┌───────────┬────────┬────────┬────────┬────────┬──────────┬────────┬────────┐
+│ Stat      │ 1%     │ 2.5%   │ 50%    │ 97.5%  │ Avg      │ Stdev  │ Min    │
+├───────────┼────────┼────────┼────────┼────────┼──────────┼────────┼────────┤
+│ Req/Sec   │ 1 265  │ 2 109  │ 4 235  │ 4 947  │ 3 995,05 │ 775,7  │ 1 265  │
+├───────────┼────────┼────────┼────────┼────────┼──────────┼────────┼────────┤
+│ Bytes/Sec │ 225 kB │ 376 kB │ 754 kB │ 881 kB │ 711 kB   │ 138 kB │ 225 kB │
+└───────────┴────────┴────────┴────────┴────────┴──────────┴────────┴────────┘
+
+Req/Bytes counts sampled once per second.
+# of samples: 45
+
+180k requests in 45.05s, 32 MB read
+

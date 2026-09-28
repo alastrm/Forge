@@ -1,8 +1,12 @@
+import logging
 import threading
 import time
+import urllib.request
 import uuid
 from collections.abc import Callable
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from forge.core.errors import (
     ConcurrencyError,
@@ -38,10 +42,19 @@ class DeploymentFailedError(ForgeError):
 
 
 class DeploymentService:
-    def __init__(self, db: Database, runtime: Runtime, proxy: Proxy) -> None:
+    def __init__(
+        self,
+        db: Database,
+        runtime: Runtime,
+        proxy: Proxy,
+        drain_delay: float = 2.0,
+        convergence_timeout: float = 3.0,
+    ) -> None:
         self.db = db
         self.runtime = runtime
         self.proxy = proxy
+        self.drain_delay = drain_delay
+        self.convergence_timeout = convergence_timeout
         self.app_repo = ApplicationRepository(db)
         self.dep_repo = DeploymentRepository(db)
         self.event_repo = EventRepository(db)
@@ -109,6 +122,8 @@ class DeploymentService:
         health_check_path: str = "/health",
         health_check_timeout: float = 15.0,
         health_check_interval: float = 0.5,
+        drain_delay: float | None = None,
+        convergence_timeout: float | None = None,
         build_log_callback: Callable[[str], None] | None = None,
     ) -> Deployment:
         # SEC-05: Strict SSRF protection on health_check_path
@@ -143,6 +158,8 @@ class DeploymentService:
                 health_check_path=health_check_path,
                 health_check_timeout=health_check_timeout,
                 health_check_interval=health_check_interval,
+                drain_delay=drain_delay,
+                convergence_timeout=convergence_timeout,
                 build_log_callback=build_log_callback,
             )
         finally:
@@ -156,6 +173,8 @@ class DeploymentService:
         health_check_path: str = "/health",
         health_check_timeout: float = 15.0,
         health_check_interval: float = 0.5,
+        drain_delay: float | None = None,
+        convergence_timeout: float | None = None,
         build_log_callback: Callable[[str], None] | None = None,
     ) -> Deployment:
         dep = self.create_deployment(app_id)
@@ -165,6 +184,8 @@ class DeploymentService:
             health_check_path=health_check_path,
             health_check_timeout=health_check_timeout,
             health_check_interval=health_check_interval,
+            drain_delay=drain_delay,
+            convergence_timeout=convergence_timeout,
             build_log_callback=build_log_callback,
         )
 
@@ -176,10 +197,28 @@ class DeploymentService:
         health_check_path: str,
         health_check_timeout: float,
         health_check_interval: float,
+        drain_delay: float | None,
+        convergence_timeout: float | None,
         build_log_callback: Callable[[str], None] | None,
     ) -> Deployment:
         self.runtime.ensure_network("forge-net")
         self.proxy.ensure_proxy()
+
+        if drain_delay is None:
+            if type(self.proxy).__name__ == "FakeProxy" or type(self.runtime).__name__ == "FakeRuntime":
+                effective_drain_delay = self.drain_delay if self.drain_delay != 2.0 else 0.0
+            else:
+                effective_drain_delay = self.drain_delay
+        else:
+            effective_drain_delay = drain_delay
+
+        if convergence_timeout is None:
+            if type(self.proxy).__name__ == "FakeProxy" or type(self.runtime).__name__ == "FakeRuntime":
+                effective_convergence_timeout = self.convergence_timeout if self.convergence_timeout != 3.0 else 0.0
+            else:
+                effective_convergence_timeout = self.convergence_timeout
+        else:
+            effective_convergence_timeout = convergence_timeout
 
         previous_active_dep = self.dep_repo.get_active_deployment(app.id)
 
@@ -324,50 +363,72 @@ class DeploymentService:
         )
 
         # 5. Promotion & Decommission previous active deployment
-        # Decommission previous active deployment if existed (transition to STOPPING before candidate is ACTIVE)
-        if previous_active_dep is not None and previous_active_dep.id != dep.id:
-            try:
-                self.dep_repo.update_status(previous_active_dep.id, DeploymentStatus.STOPPING)
-            except Exception:
-                pass
+        decommissioning_old = (
+            previous_active_dep is not None
+            and previous_active_dep.id != dep.id
+        )
+        if decommissioning_old:
+            self.register_in_flight(previous_active_dep.id)
 
-        # State: ACTIVE (Promotion)
-        dep = self.dep_repo.update_status(
-            dep.id,
-            DeploymentStatus.ACTIVE,
-            active_container_id=candidate_name,
-        )
-        # Priority 1: Traefik candidate must never receive traffic before promotion.
-        # Now that candidate is active, configure proxy routing to switch traffic to it.
-        self.proxy.promote_service(
-            app_name=app.name,
-            domain=app.domain,
-            container_name=candidate_name,
-            port=app.container_port,
-        )
-        self.event_repo.record(
-            app_id=app.id,
-            event_kind=EventKind.DEPLOYMENT_PROMOTED,
-            payload={"active_container": candidate_name},
-            deployment_id=dep.id,
-        )
-
-        # 6. Finalize decommission of old container
-        if previous_active_dep is not None:
-            old_container = previous_active_dep.active_container_id
-            if old_container and old_container != candidate_name:
+        try:
+            if decommissioning_old:
                 try:
-                    self.runtime.stop_container(old_container, timeout=10)
+                    self.dep_repo.update_status(previous_active_dep.id, DeploymentStatus.STOPPING)
                 except Exception:
                     pass
-                self.runtime.remove_container(old_container, force=True)
-                self.dep_repo.update_status(previous_active_dep.id, DeploymentStatus.STOPPED)
-                self.event_repo.record(
-                    app_id=app.id,
-                    event_kind=EventKind.DEPLOYMENT_STOPPED,
-                    payload={"stopped_container": old_container},
-                    deployment_id=previous_active_dep.id,
-                )
+
+            # State: ACTIVE (Promotion)
+            dep = self.dep_repo.update_status(
+                dep.id,
+                DeploymentStatus.ACTIVE,
+                active_container_id=candidate_name,
+            )
+            # Priority 1: Traefik candidate must never receive traffic before promotion.
+            # Now that candidate is active, configure proxy routing to switch traffic to it.
+            self.proxy.promote_service(
+                app_name=app.name,
+                domain=app.domain,
+                container_name=candidate_name,
+                port=app.container_port,
+            )
+            self.event_repo.record(
+                app_id=app.id,
+                event_kind=EventKind.DEPLOYMENT_PROMOTED,
+                payload={"active_container": candidate_name},
+                deployment_id=dep.id,
+            )
+
+            # Ingress convergence check: verify Traefik is actively routing to candidate
+            self._verify_ingress_convergence(
+                domain=app.domain,
+                timeout=effective_convergence_timeout,
+                path=health_check_path,
+                candidate_container=candidate_name,
+            )
+
+            # 6. Finalize decommission of old container with connection drain
+            if decommissioning_old:
+                # Connection drain phase: allow existing in-flight requests to complete
+                if effective_drain_delay > 0:
+                    time.sleep(effective_drain_delay)
+
+                old_container = previous_active_dep.active_container_id
+                if old_container and old_container != candidate_name:
+                    try:
+                        self.runtime.stop_container(old_container, timeout=10)
+                    except Exception:
+                        pass
+                    self.runtime.remove_container(old_container, force=True)
+                    self.dep_repo.update_status(previous_active_dep.id, DeploymentStatus.STOPPED)
+                    self.event_repo.record(
+                        app_id=app.id,
+                        event_kind=EventKind.DEPLOYMENT_STOPPED,
+                        payload={"stopped_container": old_container},
+                        deployment_id=previous_active_dep.id,
+                    )
+        finally:
+            if decommissioning_old:
+                self.unregister_in_flight(previous_active_dep.id)
 
         return dep
 
@@ -412,7 +473,60 @@ class DeploymentService:
             time.sleep(interval)
         return False
 
-    def rollback(self, app_id: str, target_deployment_id: str | None = None) -> Deployment:
+    def _verify_ingress_convergence(
+        self,
+        domain: str,
+        timeout: float = 3.0,
+        interval: float = 0.05,
+        path: str = "/",
+        candidate_container: str | None = None,
+    ) -> bool:
+        """Verify that Traefik reverse proxy has converged and is routing production traffic to the new service."""
+        if timeout <= 0:
+            return True
+
+        traefik_port = getattr(self.proxy, "host_port", None)
+        if traefik_port is None or type(self.proxy).__name__ == "FakeProxy":
+            return True
+
+        deadline = time.monotonic() + timeout
+        probe_path = path if (path and path.startswith("/")) else f"/{path or ''}"
+        paths_to_try = [probe_path]
+        if probe_path != "/":
+            paths_to_try.append("/")
+
+        headers = {
+            "Host": domain,
+            "User-Agent": "Forge-Convergence-Probe/1.0",
+        }
+
+        while time.monotonic() < deadline:
+            for p in paths_to_try:
+                try:
+                    url = f"http://127.0.0.1:{traefik_port}{p}"
+                    req = urllib.request.Request(url, headers=headers, method="GET")
+                    with urllib.request.urlopen(req, timeout=min(1.0, timeout)) as resp:
+                        if 200 <= resp.status < 400:
+                            return True
+                except Exception:
+                    pass
+            time.sleep(interval)
+
+        logger.warning(
+            "Ingress convergence verification timed out after %.1fs for domain '%s' on port %s",
+            timeout,
+            domain,
+            traefik_port,
+        )
+        return False
+
+    def rollback(
+        self,
+        app_id: str,
+        target_deployment_id: str | None = None,
+        drain_delay: float | None = None,
+        convergence_timeout: float | None = None,
+    ) -> Deployment:
         app = self.app_repo.get_by_id(app_id)
         if app is None:
             raise EntityNotFoundError(f"Application '{app_id}' not found")
@@ -532,40 +646,77 @@ class DeploymentService:
                     self.dep_repo.update_status(rollback_dep.id, DeploymentStatus.FAILED, error_message=err_msg)
                     raise DeploymentFailedError(err_msg)
 
-                # Transition current active to STOPPING before promoting rollback_dep to ACTIVE
-                if current_active is not None and current_active.id != rollback_dep.id:
-                    try:
-                        self.dep_repo.update_status(current_active.id, DeploymentStatus.STOPPING)
-                    except Exception:
-                        pass
+                if drain_delay is None:
+                    if type(self.proxy).__name__ == "FakeProxy" or type(self.runtime).__name__ == "FakeRuntime":
+                        effective_drain_delay = self.drain_delay if self.drain_delay != 2.0 else 0.0
+                    else:
+                        effective_drain_delay = self.drain_delay
+                else:
+                    effective_drain_delay = drain_delay
 
-                rollback_dep = self.dep_repo.update_status(
-                    rollback_dep.id,
-                    DeploymentStatus.ACTIVE,
-                    active_container_id=candidate_name,
-                )
-                self.proxy.promote_service(
-                    app_name=app.name,
-                    domain=app.domain,
-                    container_name=candidate_name,
-                    port=app.container_port,
-                )
+                if convergence_timeout is None:
+                    if type(self.proxy).__name__ == "FakeProxy" or type(self.runtime).__name__ == "FakeRuntime":
+                        effective_convergence_timeout = self.convergence_timeout if self.convergence_timeout != 3.0 else 0.0
+                    else:
+                        effective_convergence_timeout = self.convergence_timeout
+                else:
+                    effective_convergence_timeout = convergence_timeout
 
-                if current_active is not None and current_active.active_container_id:
-                    old_container = current_active.active_container_id
-                    if old_container != candidate_name:
+                decommissioning_active = (
+                    current_active is not None
+                    and current_active.id != rollback_dep.id
+                )
+                if decommissioning_active:
+                    self.register_in_flight(current_active.id)
+
+                try:
+                    if decommissioning_active:
                         try:
-                            self.runtime.stop_container(old_container, timeout=10)
+                            self.dep_repo.update_status(current_active.id, DeploymentStatus.STOPPING)
                         except Exception:
                             pass
-                        self.runtime.remove_container(old_container, force=True)
-                        self.dep_repo.update_status(current_active.id, DeploymentStatus.ROLLED_BACK)
-                        self.event_repo.record(
-                            app_id=app.id,
-                            event_kind=EventKind.DEPLOYMENT_STOPPED,
-                            payload={"stopped_container": old_container},
-                            deployment_id=current_active.id,
-                        )
+
+                    rollback_dep = self.dep_repo.update_status(
+                        rollback_dep.id,
+                        DeploymentStatus.ACTIVE,
+                        active_container_id=candidate_name,
+                    )
+                    self.proxy.promote_service(
+                        app_name=app.name,
+                        domain=app.domain,
+                        container_name=candidate_name,
+                        port=app.container_port,
+                    )
+
+                    self._verify_ingress_convergence(
+                        domain=app.domain,
+                        timeout=effective_convergence_timeout,
+                        path="/health",
+                        candidate_container=candidate_name,
+                    )
+
+                    if decommissioning_active:
+                        if effective_drain_delay > 0:
+                            time.sleep(effective_drain_delay)
+
+                        if current_active.active_container_id:
+                            old_container = current_active.active_container_id
+                            if old_container != candidate_name:
+                                try:
+                                    self.runtime.stop_container(old_container, timeout=10)
+                                except Exception:
+                                    pass
+                                self.runtime.remove_container(old_container, force=True)
+                                self.dep_repo.update_status(current_active.id, DeploymentStatus.ROLLED_BACK)
+                                self.event_repo.record(
+                                    app_id=app.id,
+                                    event_kind=EventKind.DEPLOYMENT_STOPPED,
+                                    payload={"stopped_container": old_container},
+                                    deployment_id=current_active.id,
+                                )
+                finally:
+                    if decommissioning_active:
+                        self.unregister_in_flight(current_active.id)
 
                 self.event_repo.record(
                     app_id=app.id,

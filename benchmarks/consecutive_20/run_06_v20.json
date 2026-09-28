@@ -1,0 +1,583 @@
+{
+  "timestamp": "2026-09-28T16:11:55.761219+00:00",
+  "config": {
+    "threads": 10,
+    "duration": 40.0,
+    "pause": 0.01,
+    "url": "http://127.0.0.1/",
+    "host": "demo-stream.localhost",
+    "deploy_new_version": "v20",
+    "deploy_at": 15.0
+  },
+  "metrics": {
+    "total_requests": 12100,
+    "successful_requests": 12100,
+    "non_200_requests": 0,
+    "error_rate_pct": 0.0,
+    "rps": 295.6,
+    "breakdown": {
+      "200 OK": 12100
+    },
+    "error_seconds": [],
+    "initial_version": "v19",
+    "new_version": "v20",
+    "first_new_version_offset_sec": 18.803,
+    "first_new_version_second": 18,
+    "old_after_new_count": 0
+  },
+  "deploy_telemetry": {
+    "requested_at_offset": 15.00869699998293,
+    "deploy_submit_offset": 15.015649100008886,
+    "deployment_id": "dep-c59ebf55",
+    "final_status": "ACTIVE",
+    "active_container": "demo-stream-b23f081",
+    "stage_timestamps": {
+      "PENDING": 15.144,
+      "BUILDING": 15.295,
+      "STARTING": 17.156,
+      "HEALTH_CHECKING": 17.722,
+      "ACTIVE": 18.583
+    }
+  },
+  "db_events": [
+    {
+      "kind": "deployment.build_succeeded",
+      "created_at": "2026-09-28T16:11:31.906469+00:00",
+      "payload": {
+        "image_tag": "demo-stream:cd9a70a",
+        "revision_id": "rev-6e63c3a1"
+      }
+    },
+    {
+      "kind": "deployment.container_started",
+      "created_at": "2026-09-28T16:11:32.470320+00:00",
+      "payload": {
+        "candidate_container": "demo-stream-b23f081"
+      }
+    },
+    {
+      "kind": "deployment.created",
+      "created_at": "2026-09-28T16:11:29.922192+00:00",
+      "payload": {
+        "deployment_id": "dep-c59ebf55",
+        "app_name": "demo-stream"
+      }
+    },
+    {
+      "kind": "deployment.build_started",
+      "created_at": "2026-09-28T16:11:30.096316+00:00",
+      "payload": {
+        "image_tag": "demo-stream:cd9a70a"
+      }
+    },
+    {
+      "kind": "deployment.promoted",
+      "created_at": "2026-09-28T16:11:33.653375+00:00",
+      "payload": {
+        "active_container": "demo-stream-b23f081"
+      }
+    },
+    {
+      "kind": "deployment.health_check_passed",
+      "created_at": "2026-09-28T16:11:33.329403+00:00",
+      "payload": {
+        "path": "/health"
+      }
+    }
+  ],
+  "seconds_breakdown": {
+    "0": {
+      "total": 279,
+      "ok": 279,
+      "errors": 0,
+      "error_details": {},
+      "versions": {
+        "v19": 279
+      },
+      "p50_latency_ms": 3.23,
+      "avg_latency_ms": 22.5,
+      "max_latency_ms": 1016.82
+    },
+    "1": {
+      "total": 339,
+      "ok": 339,
+      "errors": 0,
+      "error_details": {},
+      "versions": {
+        "v19": 339
+      },
+      "p50_latency_ms": 2.91,
+      "avg_latency_ms": 16.15,
+      "max_latency_ms": 1031.31
+    },
+    "2": {
+      "total": 362,
+      "ok": 362,
+      "errors": 0,
+      "error_details": {},
+      "versions": {
+        "v19": 362
+      },
+      "p50_latency_ms": 3.4,
+      "avg_latency_ms": 14.91,
+      "max_latency_ms": 1031.66
+    },
+    "3": {
+      "total": 320,
+      "ok": 320,
+      "errors": 0,
+      "error_details": {},
+      "versions": {
+        "v19": 320
+      },
+      "p50_latency_ms": 4.1,
+      "avg_latency_ms": 15.1,
+      "max_latency_ms": 1016.76
+    },
+    "4": {
+      "total": 353,
+      "ok": 353,
+      "errors": 0,
+      "error_details": {},
+      "versions": {
+        "v19": 353
+      },
+      "p50_latency_ms": 3.84,
+      "avg_latency_ms": 15.53,
+      "max_latency_ms": 1028.65
+    },
+    "5": {
+      "total": 354,
+      "ok": 354,
+      "errors": 0,
+      "error_details": {},
+      "versions": {
+        "v19": 354
+      },
+      "p50_latency_ms": 3.23,
+      "avg_latency_ms": 15.1,
+      "max_latency_ms": 1039.36
+    },
+    "6": {
+      "total": 309,
+      "ok": 309,
+      "errors": 0,
+      "error_details": {},
+      "versions": {
+        "v19": 309
+      },
+      "p50_latency_ms": 3.99,
+      "avg_latency_ms": 14.86,
+      "max_latency_ms": 1065.42
+    },
+    "7": {
+      "total": 354,
+      "ok": 354,
+      "errors": 0,
+      "error_details": {},
+      "versions": {
+        "v19": 354
+      },
+      "p50_latency_ms": 2.63,
+      "avg_latency_ms": 15.23,
+      "max_latency_ms": 1028.08
+    },
+    "8": {
+      "total": 284,
+      "ok": 284,
+      "errors": 0,
+      "error_details": {},
+      "versions": {
+        "v19": 284
+      },
+      "p50_latency_ms": 3.51,
+      "avg_latency_ms": 21.12,
+      "max_latency_ms": 1018.1
+    },
+    "9": {
+      "total": 365,
+      "ok": 365,
+      "errors": 0,
+      "error_details": {},
+      "versions": {
+        "v19": 365
+      },
+      "p50_latency_ms": 2.56,
+      "avg_latency_ms": 14.23,
+      "max_latency_ms": 1031.15
+    },
+    "10": {
+      "total": 314,
+      "ok": 314,
+      "errors": 0,
+      "error_details": {},
+      "versions": {
+        "v19": 314
+      },
+      "p50_latency_ms": 3.29,
+      "avg_latency_ms": 6.95,
+      "max_latency_ms": 1009.24
+    },
+    "11": {
+      "total": 364,
+      "ok": 364,
+      "errors": 0,
+      "error_details": {},
+      "versions": {
+        "v19": 364
+      },
+      "p50_latency_ms": 2.56,
+      "avg_latency_ms": 12.15,
+      "max_latency_ms": 1015.47
+    },
+    "12": {
+      "total": 343,
+      "ok": 343,
+      "errors": 0,
+      "error_details": {},
+      "versions": {
+        "v19": 343
+      },
+      "p50_latency_ms": 3.62,
+      "avg_latency_ms": 16.69,
+      "max_latency_ms": 1041.68
+    },
+    "13": {
+      "total": 284,
+      "ok": 284,
+      "errors": 0,
+      "error_details": {},
+      "versions": {
+        "v19": 284
+      },
+      "p50_latency_ms": 3.93,
+      "avg_latency_ms": 20.49,
+      "max_latency_ms": 1037.61
+    },
+    "14": {
+      "total": 303,
+      "ok": 303,
+      "errors": 0,
+      "error_details": {},
+      "versions": {
+        "v19": 303
+      },
+      "p50_latency_ms": 4.61,
+      "avg_latency_ms": 14.86,
+      "max_latency_ms": 1028.33
+    },
+    "15": {
+      "total": 254,
+      "ok": 254,
+      "errors": 0,
+      "error_details": {},
+      "versions": {
+        "v19": 254
+      },
+      "p50_latency_ms": 5.31,
+      "avg_latency_ms": 17.83,
+      "max_latency_ms": 1032.5
+    },
+    "16": {
+      "total": 300,
+      "ok": 300,
+      "errors": 0,
+      "error_details": {},
+      "versions": {
+        "v19": 300
+      },
+      "p50_latency_ms": 4.84,
+      "avg_latency_ms": 12.15,
+      "max_latency_ms": 1026.76
+    },
+    "17": {
+      "total": 277,
+      "ok": 277,
+      "errors": 0,
+      "error_details": {},
+      "versions": {
+        "v19": 277
+      },
+      "p50_latency_ms": 4.92,
+      "avg_latency_ms": 20.07,
+      "max_latency_ms": 1028.66
+    },
+    "18": {
+      "total": 316,
+      "ok": 316,
+      "errors": 0,
+      "error_details": {},
+      "versions": {
+        "v19": 257,
+        "v20": 59
+      },
+      "p50_latency_ms": 4.35,
+      "avg_latency_ms": 18.41,
+      "max_latency_ms": 1032.91
+    },
+    "19": {
+      "total": 320,
+      "ok": 320,
+      "errors": 0,
+      "error_details": {},
+      "versions": {
+        "v20": 320
+      },
+      "p50_latency_ms": 4.3,
+      "avg_latency_ms": 14.15,
+      "max_latency_ms": 1034.69
+    },
+    "20": {
+      "total": 324,
+      "ok": 324,
+      "errors": 0,
+      "error_details": {},
+      "versions": {
+        "v20": 324
+      },
+      "p50_latency_ms": 3.92,
+      "avg_latency_ms": 17.07,
+      "max_latency_ms": 1037.15
+    },
+    "21": {
+      "total": 296,
+      "ok": 296,
+      "errors": 0,
+      "error_details": {},
+      "versions": {
+        "v20": 296
+      },
+      "p50_latency_ms": 3.41,
+      "avg_latency_ms": 12.38,
+      "max_latency_ms": 1035.43
+    },
+    "22": {
+      "total": 301,
+      "ok": 301,
+      "errors": 0,
+      "error_details": {},
+      "versions": {
+        "v20": 301
+      },
+      "p50_latency_ms": 4.37,
+      "avg_latency_ms": 18.09,
+      "max_latency_ms": 1036.11
+    },
+    "23": {
+      "total": 328,
+      "ok": 328,
+      "errors": 0,
+      "error_details": {},
+      "versions": {
+        "v20": 328
+      },
+      "p50_latency_ms": 3.22,
+      "avg_latency_ms": 16.17,
+      "max_latency_ms": 1031.55
+    },
+    "24": {
+      "total": 305,
+      "ok": 305,
+      "errors": 0,
+      "error_details": {},
+      "versions": {
+        "v20": 305
+      },
+      "p50_latency_ms": 4.34,
+      "avg_latency_ms": 11.34,
+      "max_latency_ms": 1017.9
+    },
+    "25": {
+      "total": 295,
+      "ok": 295,
+      "errors": 0,
+      "error_details": {},
+      "versions": {
+        "v20": 295
+      },
+      "p50_latency_ms": 3.63,
+      "avg_latency_ms": 19.08,
+      "max_latency_ms": 1016.33
+    },
+    "26": {
+      "total": 286,
+      "ok": 286,
+      "errors": 0,
+      "error_details": {},
+      "versions": {
+        "v20": 286
+      },
+      "p50_latency_ms": 5.07,
+      "avg_latency_ms": 21.28,
+      "max_latency_ms": 1026.71
+    },
+    "27": {
+      "total": 240,
+      "ok": 240,
+      "errors": 0,
+      "error_details": {},
+      "versions": {
+        "v20": 240
+      },
+      "p50_latency_ms": 5.87,
+      "avg_latency_ms": 18.95,
+      "max_latency_ms": 1019.92
+    },
+    "28": {
+      "total": 218,
+      "ok": 218,
+      "errors": 0,
+      "error_details": {},
+      "versions": {
+        "v20": 218
+      },
+      "p50_latency_ms": 8.15,
+      "avg_latency_ms": 18.5,
+      "max_latency_ms": 1033.0
+    },
+    "29": {
+      "total": 202,
+      "ok": 202,
+      "errors": 0,
+      "error_details": {},
+      "versions": {
+        "v20": 202
+      },
+      "p50_latency_ms": 8.11,
+      "avg_latency_ms": 28.52,
+      "max_latency_ms": 1030.22
+    },
+    "30": {
+      "total": 274,
+      "ok": 274,
+      "errors": 0,
+      "error_details": {},
+      "versions": {
+        "v20": 274
+      },
+      "p50_latency_ms": 4.63,
+      "avg_latency_ms": 20.54,
+      "max_latency_ms": 1032.32
+    },
+    "31": {
+      "total": 291,
+      "ok": 291,
+      "errors": 0,
+      "error_details": {},
+      "versions": {
+        "v20": 291
+      },
+      "p50_latency_ms": 4.33,
+      "avg_latency_ms": 18.58,
+      "max_latency_ms": 1012.64
+    },
+    "32": {
+      "total": 280,
+      "ok": 280,
+      "errors": 0,
+      "error_details": {},
+      "versions": {
+        "v20": 280
+      },
+      "p50_latency_ms": 4.94,
+      "avg_latency_ms": 16.67,
+      "max_latency_ms": 1010.42
+    },
+    "33": {
+      "total": 310,
+      "ok": 310,
+      "errors": 0,
+      "error_details": {},
+      "versions": {
+        "v20": 310
+      },
+      "p50_latency_ms": 4.59,
+      "avg_latency_ms": 15.02,
+      "max_latency_ms": 1034.54
+    },
+    "34": {
+      "total": 298,
+      "ok": 298,
+      "errors": 0,
+      "error_details": {},
+      "versions": {
+        "v20": 298
+      },
+      "p50_latency_ms": 4.58,
+      "avg_latency_ms": 15.1,
+      "max_latency_ms": 1040.87
+    },
+    "35": {
+      "total": 293,
+      "ok": 293,
+      "errors": 0,
+      "error_details": {},
+      "versions": {
+        "v20": 293
+      },
+      "p50_latency_ms": 4.29,
+      "avg_latency_ms": 18.57,
+      "max_latency_ms": 1039.82
+    },
+    "36": {
+      "total": 230,
+      "ok": 230,
+      "errors": 0,
+      "error_details": {},
+      "versions": {
+        "v20": 230
+      },
+      "p50_latency_ms": 5.98,
+      "avg_latency_ms": 25.22,
+      "max_latency_ms": 1032.67
+    },
+    "37": {
+      "total": 340,
+      "ok": 340,
+      "errors": 0,
+      "error_details": {},
+      "versions": {
+        "v20": 340
+      },
+      "p50_latency_ms": 3.38,
+      "avg_latency_ms": 10.56,
+      "max_latency_ms": 1032.58
+    },
+    "38": {
+      "total": 296,
+      "ok": 296,
+      "errors": 0,
+      "error_details": {},
+      "versions": {
+        "v20": 296
+      },
+      "p50_latency_ms": 4.69,
+      "avg_latency_ms": 18.86,
+      "max_latency_ms": 1034.02
+    },
+    "39": {
+      "total": 298,
+      "ok": 298,
+      "errors": 0,
+      "error_details": {},
+      "versions": {
+        "v20": 298
+      },
+      "p50_latency_ms": 4.4,
+      "avg_latency_ms": 20.1,
+      "max_latency_ms": 1035.61
+    },
+    "40": {
+      "total": 1,
+      "ok": 1,
+      "errors": 0,
+      "error_details": {},
+      "versions": {
+        "v20": 1
+      },
+      "p50_latency_ms": 5.17,
+      "avg_latency_ms": 5.17,
+      "max_latency_ms": 5.17
+    }
+  }
+}

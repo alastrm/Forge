@@ -5,9 +5,37 @@
 [![Python Version](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen.svg)]()
-[![Tests](https://img.shields.io/badge/tests-120%20passing-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-123%20passing-brightgreen.svg)]()
 
 Forge is a minimalist single-node deployment control plane and PaaS. It provides a persistent state machine, asynchronous background deployments, continuous state reconciliation, zero-rebuild rollbacks, and an automated Traefik reverse proxy.
+
+---
+
+## Performance & Zero-Downtime Benchmarks
+
+All performance claims and zero-downtime behaviors are measured empirically under sustained synthetic load rather than assumed. Benchmarks were conducted on a single host (Intel Core i5-13450HX, Docker Engine on Linux kernel, Traefik v3 reverse proxy).
+
+### 1. High-Throughput Stress Profile (`autocannon`, 100 Connections)
+Under continuous HTTP Keep-Alive saturation (100 concurrent connections, 45 seconds):
+- **Sustained Throughput**: **~4,000 req/s** (average: **3,995.05 req/s**, peak: 4,947 req/s; **180,000 total requests** served).
+- **Typical Latency**: **1–2 ms** (P50: 2 ms, P97.5: 14 ms, average: 24.2 ms).
+- **Latency Tail under Parallel Deployment**: Only **~1 in 100 requests exceeded 1 second** (P99: 1,023 ms, Max: 8.8s). This tail latency occurred strictly during the momentary CPU and I/O spike of concurrent `docker build` and container initialization while sustaining 4k RPS.
+- **Reliability**: **0 connection timeouts, 0 socket resets, 0 non-2xx responses (100.00% 2xx)**.
+
+### 2. Blue-Green Rollout Race Condition & Empirical Fix
+During concurrent load tests (~300 RPS, 10 worker threads, 83k requests), an ingress race condition was discovered in naive Blue-Green cutovers:
+- **Before Fix**: **1 out of 7 rollouts dropped requests (HTTP 502 Bad Gateway)**. Because Traefik's dynamic file-provider has an inotify reload debounce (50–200 ms), stopping the old container immediately upon writing new configuration severed in-flight keep-alive sockets before the proxy routed to the new container.
+- **Engineered Fix**:
+  1. *Active Ingress Convergence*: The control plane issues synthetic probes directly through the ingress (`Host: <app>.localhost` on port 80) until the proxy confirms `200 OK` from the new upstream container.
+  2. *Graceful Connection Draining*: A 2.0-second drain window keeps the old container serving established keep-alive sockets before issuing `SIGTERM`.
+  3. *In-Flight Reconciler Protection*: A thread-safe in-flight registry guards transitional `STOPPING` containers against premature state failure by the background reconciler.
+- **Verification Across 20 Consecutive Rollouts**:
+  - Run suite: **20 consecutive live rollouts back-to-back** (`v14` ➔ `v34`) under uninterrupted traffic.
+  - Total requests handled: **235,828**.
+  - Dropped requests: **0 (0.00%)**.
+  - All 20 previous containers cleanly transitioned to `STOPPED` in SQLite.
+
+*For detailed test harnesses, methodology, and latency distributions, see [benchmarks/REPORT.md](benchmarks/REPORT.md).*
 
 ---
 
